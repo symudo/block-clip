@@ -1,0 +1,14 @@
+{
+  "Cannot get file path. Please use from the explorer or an editor tab.": "无法获取文件路径，请在资源管理器或编辑器标签中使用。",
+  "No valid files found in the selection.": "所选内容中不包含任何文件。",
+  "Copied {0} file(s). Some files were skipped due to size limits.": "已复制 {0} 个文件的内容。因总大小超出限制，部分文件未被处理。",
+  "Copied contents of {0} file(s).": "已复制 {0} 个文件的内容。",
+  "Code copied: {0}": "代码已复制: {0}",
+  "Failed to copy file content: {0}": "复制文件内容失败: {0}",
+  "Cannot get folder path. Please use from the file explorer.": "无法获取文件夹路径，请从侧边栏文件管理器中使用。",
+  "Cannot determine the workspace folder.": "无法确定工作区。",
+  "The selected folder is empty or contains no copyable files.": "所选文件夹为空或不包含任何可复制的文件。",
+  "Copied {1} item(s) from folder '{0}'. Some files were skipped due to size limits.": "已复制 {0} 文件夹中 {1} 个项目的内容。因总大小超出限制，部分文件未被处理。",
+  "Copied {1} item(s) from folder '{0}'.": "已复制 {0} 文件夹中 {1} 个项目的内容。",
+  "Failed to copy folder content: {0}": "复制文件夹内容失败: {0}"
+}

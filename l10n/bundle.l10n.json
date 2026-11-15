@@ -1,0 +1,14 @@
+{
+  "Cannot get file path. Please use from the explorer or an editor tab.": "Cannot get file path. Please use from the explorer or an editor tab.",
+  "No valid files found in the selection.": "No valid files found in the selection.",
+  "Copied {0} file(s). Some files were skipped due to size limits.": "Copied {0} file(s). Some files were skipped due to size limits.",
+  "Copied contents of {0} file(s).": "Copied contents of {0} file(s).",
+  "Code copied: {0}": "Code copied: {0}",
+  "Failed to copy file content: {0}": "Failed to copy file content: {0}",
+  "Cannot get folder path. Please use from the file explorer.": "Cannot get folder path. Please use from the file explorer.",
+  "Cannot determine the workspace folder.": "Cannot determine the workspace folder.",
+  "The selected folder is empty or contains no copyable files.": "The selected folder is empty or contains no copyable files.",
+  "Copied {1} item(s) from folder '{0}'. Some files were skipped due to size limits.": "Copied {1} item(s) from folder '{0}'. Some files were skipped due to size limits.",
+  "Copied {1} item(s) from folder '{0}'.": "Copied {1} item(s) from folder '{0}'.",
+  "Failed to copy folder content: {0}": "Failed to copy folder content: {0}"
+}

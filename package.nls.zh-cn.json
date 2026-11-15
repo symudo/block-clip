@@ -1,0 +1,5 @@
+{
+  "extension.description": "将文件内容及其相对路径复制到剪贴板",
+  "command.copyCode": "复制文件代码",
+  "command.copyFolderCode": "复制文件夹代码"
+}

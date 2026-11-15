@@ -50,6 +50,48 @@ const binaryFileExtensions = new Set([
   'DS_Store'
 ])
 
+const extensionToLanguageMap: Record<string, string> = {
+  js: 'javascript',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  ts: 'typescript',
+  mts: 'typescript',
+  cts: 'typescript',
+  jsx: 'javascriptreact',
+  tsx: 'typescriptreact',
+  py: 'python',
+  rs: 'rust',
+  rb: 'ruby',
+  cs: 'csharp',
+  sh: 'bash',
+  bash: 'bash',
+  zsh: 'bash',
+  yml: 'yaml',
+  yaml: 'yaml',
+  json: 'json',
+  jsonc: 'jsonc',
+  html: 'html',
+  htm: 'html',
+  css: 'css',
+  scss: 'scss',
+  sass: 'sass',
+  less: 'less',
+  vue: 'vue',
+  svelte: 'svelte',
+  go: 'go',
+  java: 'java',
+  kt: 'kotlin',
+  cpp: 'cpp',
+  c: 'c',
+  h: 'c',
+  hpp: 'cpp',
+  sql: 'sql',
+  md: 'markdown',
+  xml: 'xml',
+  toml: 'toml',
+  dockerfile: 'dockerfile'
+}
+
 function isBinaryFile(filePath: string): boolean {
   const extension = path.extname(filePath).substring(1).toLowerCase()
   return binaryFileExtensions.has(extension)
@@ -60,6 +102,20 @@ function getErrorMessage(error: unknown): string {
     return error.message
   }
   return String(error)
+}
+
+function getCodeFence(content: string): string {
+  const matches = content.match(/`{3,}/g)
+  if (!matches) {
+    return '```'
+  }
+  let maxBackticks = 3
+  for (const match of matches) {
+    if (match.length >= maxBackticks) {
+      maxBackticks = match.length + 1
+    }
+  }
+  return '`'.repeat(maxBackticks)
 }
 
 async function getFormattedFileString(
@@ -74,29 +130,30 @@ async function getFormattedFileString(
     return `File: ${relativePath}\n`
   }
 
-  const fileContentBytes = await vscode.workspace.fs.readFile(fileUri)
-  const fileContent = Buffer.from(fileContentBytes).toString('utf8')
-
+  let fileContent: string
   let language = 'plaintext'
-  const doc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === fileUri.fsPath)
-  if (doc) {
-    language = doc.languageId
+
+  // 优先从已打开的内存编辑器中获取，避免读取磁盘导致未保存内容丢失
+  const openDoc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === fileUri.fsPath)
+  if (openDoc) {
+    fileContent = openDoc.getText()
+    language = openDoc.languageId
   } else {
-    const extension = path.extname(fileUri.fsPath).substring(1)
+    const fileContentBytes = await vscode.workspace.fs.readFile(fileUri)
+    fileContent = Buffer.from(fileContentBytes).toString('utf8')
+    const extension = path.extname(fileUri.fsPath).substring(1).toLowerCase()
     if (extension) {
-      language = extension
+      language = extensionToLanguageMap[extension] || extension
     }
   }
 
-  return `File: ${relativePath}\n\n\`\`\`${language}\n${fileContent}\n\`\`\`\n`
+  const fence = getCodeFence(fileContent)
+  return `File: ${relativePath}\n\n${fence}${language}\n${fileContent}\n${fence}\n`
 }
 
 /**
- * 【已重构】高效地、递归地获取所有未被忽略的文件 URI。
- * 此版本修正了路径匹配的基准，确保正确应用 .gitignore 规则。
- * @param directoryUri 当前正在遍历的目录
- * @param rootUri 触发操作的根目录，是 .gitignore 规则的基准
- * @param ig ignore 实例
+ * 高效地、递归地获取所有未被忽略的文件 URI。
+ * 路径匹配基准根据 rootUri 计算，确保正确应用 .gitignore 规则。
  */
 async function getAllFileUris(
   directoryUri: vscode.Uri,
@@ -108,8 +165,6 @@ async function getAllFileUris(
 
   for (const [name, type] of entries) {
     const entryUri = vscode.Uri.joinPath(directoryUri, name)
-
-    // 关键修正：相对路径必须基于触发命令的根目录(rootUri)计算，而不是工作区
     const relativePath = path.relative(rootUri.fsPath, entryUri.fsPath).replace(/\\/g, '/')
 
     if (ig.ignores(relativePath)) {
@@ -157,26 +212,36 @@ async function processUris(
 export function activate(context: vscode.ExtensionContext) {
   const copyCodeCommand = vscode.commands.registerCommand(
     'copy-code-with-path.copyCode',
-    async (clickedUri: vscode.Uri, allSelectedUris?: vscode.Uri[]) => {
-      // ... 此命令逻辑未改变，保持原样 ...
-      const urisToProcess = allSelectedUris && allSelectedUris.length > 0 ? allSelectedUris : [clickedUri]
+    async (clickedUri?: vscode.Uri, allSelectedUris?: vscode.Uri[]) => {
+      // 兼容资源管理器多选/单选、文件标签(Tab)右键，以及从活动编辑器执行
+      let targetUris: vscode.Uri[] = []
 
-      if (!urisToProcess[0]) {
-        vscode.window.showErrorMessage('无法获取文件路径，请从侧边栏文件管理器中使用。')
+      if (allSelectedUris && allSelectedUris.length > 0) {
+        targetUris = allSelectedUris
+      } else if (clickedUri) {
+        targetUris = [clickedUri]
+      } else if (vscode.window.activeTextEditor?.document.uri) {
+        targetUris = [vscode.window.activeTextEditor.document.uri]
+      }
+
+      if (targetUris.length === 0 || !targetUris[0]) {
+        vscode.window.showErrorMessage(
+          vscode.l10n.t('Cannot get file path. Please use from the explorer or an editor tab.')
+        )
         return
       }
 
       try {
         const fileUris: vscode.Uri[] = []
-        const stats = await Promise.all(urisToProcess.map((uri) => vscode.workspace.fs.stat(uri)))
+        const stats = await Promise.all(targetUris.map((uri) => vscode.workspace.fs.stat(uri)))
         stats.forEach((stat, index) => {
           if (stat.type === vscode.FileType.File) {
-            fileUris.push(urisToProcess[index])
+            fileUris.push(targetUris[index])
           }
         })
 
         if (fileUris.length === 0) {
-          vscode.window.showWarningMessage('所选内容中不包含任何文件。')
+          vscode.window.showWarningMessage(vscode.l10n.t('No valid files found in the selection.'))
           return
         }
 
@@ -187,33 +252,33 @@ export function activate(context: vscode.ExtensionContext) {
 
         if (stoppedEarly) {
           vscode.window.showWarningMessage(
-            `已复制 ${processedCount} 个文件的内容。因总大小超出限制，部分文件未被处理。`
+            vscode.l10n.t('Copied {0} file(s). Some files were skipped due to size limits.', processedCount)
           )
         } else if (fileUris.length > 1) {
-          vscode.window.showInformationMessage(`已复制 ${fileUris.length} 个文件的内容。`)
+          vscode.window.showInformationMessage(vscode.l10n.t('Copied contents of {0} file(s).', fileUris.length))
         } else {
-          vscode.window.showInformationMessage(`代码已复制: ${path.basename(fileUris[0].fsPath)}`)
+          vscode.window.showInformationMessage(vscode.l10n.t('Code copied: {0}', path.basename(fileUris[0].fsPath)))
         }
       } catch (error) {
         console.error(error)
         const message = getErrorMessage(error)
-        vscode.window.showErrorMessage(`复制文件内容失败: ${message}`)
+        vscode.window.showErrorMessage(vscode.l10n.t('Failed to copy file content: {0}', message))
       }
     }
   )
 
   const copyFolderCodeCommand = vscode.commands.registerCommand(
     'copy-code-with-path.copyFolderCode',
-    async (folderUri: vscode.Uri) => {
+    async (folderUri?: vscode.Uri) => {
       if (!folderUri) {
-        vscode.window.showErrorMessage('无法获取文件夹路径，请从侧边栏文件管理器中使用。')
+        vscode.window.showErrorMessage(vscode.l10n.t('Cannot get folder path. Please use from the file explorer.'))
         return
       }
 
       try {
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(folderUri)
         if (!workspaceFolder) {
-          vscode.window.showErrorMessage('无法确定工作区。')
+          vscode.window.showErrorMessage(vscode.l10n.t('Cannot determine the workspace folder.'))
           return
         }
 
@@ -231,20 +296,30 @@ export function activate(context: vscode.ExtensionContext) {
         ig.add('pnpm-lock.yaml')
         ig.add('bun.lockb')
 
+        // 若当前选中的文件夹不是工作区根目录，先尝试读取工作区根目录的 .gitignore
+        if (workspaceFolder.uri.fsPath !== folderUri.fsPath) {
+          try {
+            const rootGitignoreUri = vscode.Uri.joinPath(workspaceFolder.uri, '.gitignore')
+            const rootGitignoreBytes = await vscode.workspace.fs.readFile(rootGitignoreUri)
+            ig.add(Buffer.from(rootGitignoreBytes).toString('utf8'))
+          } catch {
+            // 根目录无 .gitignore 时静默处理
+          }
+        }
+
+        // 尝试读取当前文件夹下的 .gitignore
         const gitignoreUri = vscode.Uri.joinPath(folderUri, '.gitignore')
         try {
           const gitignoreContentBytes = await vscode.workspace.fs.readFile(gitignoreUri)
-          const gitignoreContent = Buffer.from(gitignoreContentBytes).toString('utf8')
-          ig.add(gitignoreContent)
+          ig.add(Buffer.from(gitignoreContentBytes).toString('utf8'))
         } catch {
-          // .gitignore 不存在时静默处理
+          // 当前文件夹无 .gitignore 时静默处理
         }
 
-        // 调用重构后的核心函数，并传入正确的基准路径 `folderUri`
         const allFileUris = await getAllFileUris(folderUri, folderUri, ig)
 
         if (allFileUris.length === 0) {
-          vscode.window.showWarningMessage('所选文件夹为空或不包含任何可复制的文件。')
+          vscode.window.showWarningMessage(vscode.l10n.t('The selected folder is empty or contains no copyable files.'))
           return
         }
 
@@ -255,15 +330,21 @@ export function activate(context: vscode.ExtensionContext) {
         const folderName = path.basename(folderUri.fsPath)
         if (stoppedEarly) {
           vscode.window.showWarningMessage(
-            `已复制 ${folderName} 文件夹中 ${processedCount} 个项目的内容。因总大小超出限制，部分文件未被处理。`
+            vscode.l10n.t(
+              "Copied {1} item(s) from folder '{0}'. Some files were skipped due to size limits.",
+              folderName,
+              processedCount
+            )
           )
         } else {
-          vscode.window.showInformationMessage(`已复制 ${folderName} 文件夹中 ${allFileUris.length} 个项目的内容。`)
+          vscode.window.showInformationMessage(
+            vscode.l10n.t("Copied {1} item(s) from folder '{0}'.", folderName, allFileUris.length)
+          )
         }
       } catch (error) {
         console.error(error)
         const message = getErrorMessage(error)
-        vscode.window.showErrorMessage(`复制文件夹内容失败: ${message}`)
+        vscode.window.showErrorMessage(vscode.l10n.t('Failed to copy folder content: {0}', message))
       }
     }
   )

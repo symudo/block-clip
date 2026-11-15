@@ -1,13 +1,14 @@
 {
   "name": "block-clip",
   "displayName": "blockClip",
-  "description": "Copies file content with its relative path to the clipboard",
-  "version": "0.0.2",
+  "description": "%extension.description%",
+  "version": "0.1.0",
   "publisher": "yuchuan",
+  "l10n": "./l10n",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/savageKarl/copy-code-with-filename.git"
+    "url": "https://github.com/symudo/block-clip.git"
   },
   "engines": {
     "vscode": "^1.80.0"
@@ -21,11 +22,11 @@
     "commands": [
       {
         "command": "copy-code-with-path.copyCode",
-        "title": "Copy Code"
+        "title": "%command.copyCode%"
       },
       {
         "command": "copy-code-with-path.copyFolderCode",
-        "title": "Copy Folder Code"
+        "title": "%command.copyFolderCode%"
       }
     ],
     "menus": {
@@ -38,6 +39,13 @@
         {
           "when": "resourceScheme == 'file' && explorerResourceIsFolder",
           "command": "copy-code-with-path.copyFolderCode",
+          "group": "navigation@5"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "when": "resourceScheme == 'file'",
+          "command": "copy-code-with-path.copyCode",
           "group": "navigation@5"
         }
       ]
