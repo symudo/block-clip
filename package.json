@@ -48,6 +48,13 @@
           "command": "copy-code-with-path.copyCode",
           "group": "navigation@5"
         }
+      ],
+      "editor/context": [
+        {
+          "when": "resourceScheme == 'file'",
+          "command": "copy-code-with-path.copyCode",
+          "group": "9_cutcopypaste@100"
+        }
       ]
     }
   },
