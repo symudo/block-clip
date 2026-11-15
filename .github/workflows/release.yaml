@@ -46,7 +46,20 @@ jobs:
           # 将路径写入 GitHub Output 供后续步骤使用
           echo "path=$VSIX_FILE" >> $GITHUB_OUTPUT
 
+      - name: Extract Changelog
+        id: changelog
+        run: |
+          # 提取当前 tag 对应版本的 CHANGELOG 段落
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -n "/^## \[$VERSION\]/,/^---/p" CHANGELOG.md | sed '$d' > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            cat CHANGELOG.md > RELEASE_NOTES.md
+          fi
+
       - name: Publish to VS Code Marketplace
+        if: ${{ env.VS_MARKETPLACE_TOKEN != '' }}
+        env:
+          VS_MARKETPLACE_TOKEN: ${{ secrets.VS_MARKETPLACE_TOKEN }}
         uses: HaaLeo/publish-vscode-extension@v2
         with:
           pat: ${{ secrets.VS_MARKETPLACE_TOKEN }}
@@ -56,5 +69,6 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: RELEASE_NOTES.md
           generate_release_notes: true
           files: ${{ steps.vsix_path.outputs.path }}
