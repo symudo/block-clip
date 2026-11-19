@@ -3,6 +3,12 @@ dist
 node_modules
 .vscode-test/
 *.vsix
+*.zip
+*.jar
+!gradle-wrapper.jar
+.gradle/
+build/
+.intellijPlatform/
 .DS_Store
 .idea
 *.log 

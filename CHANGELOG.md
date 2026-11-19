@@ -3,6 +3,18 @@
 所有对本项目的显著更改都将记录在此文件中。
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/) 规范。
 
+## [0.2.0] - 2026-11-19
+
+### ✨ 新增平台支持 (Platform Support)
+- **新增 JetBrains 平台插件支持 (IntelliJ IDEA & WebStorm)**:
+  - 100% 对齐 VS Code 版所有特性，兼容 IntelliJ IDEA、WebStorm、PyCharm、GoLand、CLion 等全系列 JetBrains IDE。
+  - 支持在项目文件树（Project View）、编辑器标签页（Editor Tab）、代码编辑区内右键菜单快捷复制。
+  - 支持未保存内容优先读取（Dirty Document First）、自适应反引号防截断、常见语言规范映射与二进制文件过滤。
+  - 支持文件夹递归复制代码与多层级 `.gitignore` 规则过滤（含 15MB 溢出保护）。
+  - 支持完整多语言国际化（英文与官方简体中文语言包自动适配）。
+
+---
+
 ## [0.1.0] - 2026-11-15
 
 ### ✨ 新增特性 (Features)

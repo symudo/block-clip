@@ -1,10 +1,8 @@
-# Copy Code with filename
+# BlockClip (Copy Code with filename)
 
-[](https://marketplace.visualstudio.com/items?itemName=yuchuan.copy-code-with-filename)
-[](https://marketplace.visualstudio.com/items?itemName=yuchuan.copy-code-with-filename)
-[](https://opensource.org/licenses/MIT)
+一款简洁而强大的跨平台代码复制增强工具（现已同时支持 **VS Code** 与 **JetBrains 全系列 IDE，如 IntelliJ IDEA / WebStorm**），旨在让你能够高效地复制文件或文件夹的代码内容，并自动附带其相对路径，输出为格式优美的 Markdown。
 
-一款简洁而强大的 VS Code 扩展，旨在让你能够高效地复制文件或文件夹的代码内容，并自动附带其相对路径，输出为格式优美的 Markdown。
+> 💡 **JetBrains (IDEA / WebStorm) 用户**：请参阅 [intellij-plugin 文档与使用指南](./intellij-plugin/README.md)。
 
 无论是编写技术文档、向AI提问、还是与同事分享代码片段，这个插件都能帮你保留重要的文件上下文，让沟通更清晰。
 

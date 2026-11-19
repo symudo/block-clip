@@ -1,0 +1,47 @@
+<idea-plugin>
+    <id>com.symudo.blockclip</id>
+    <name>BlockClip</name>
+    <vendor email="symudo@users.noreply.github.com" url="https://github.com/symudo/block-clip">symudo</vendor>
+
+    <description><![CDATA[
+    Copies file content with its relative path to the clipboard as beautifully formatted Markdown code blocks.<br>
+    Features:
+    <ul>
+        <li>Copy single or multiple files from project view, editor tab, or editor context.</li>
+        <li>Copy entire folder recursively with smart .gitignore filtering.</li>
+        <li>Dirty buffer first: copies latest unsaved changes from editor.</li>
+        <li>Adaptive Markdown fences (prevents code block breakages).</li>
+        <li>Smart language detection and binary file exclusion.</li>
+        <li>Full i18n support (English and Simplified Chinese).</li>
+    </ul>
+    ]]></description>
+
+    <!-- 兼容所有基于 IntelliJ 平台的 IDE（IDEA, WebStorm, PyCharm, GoLand 等） -->
+    <depends>com.intellij.modules.platform</depends>
+
+    <resource-bundle>messages.BlockClipBundle</resource-bundle>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="BlockClip Notification"
+                           displayType="BALLOON"
+                           key="notification.group.name"/>
+    </extensions>
+
+    <actions>
+        <action id="com.symudo.blockclip.CopyCodeAction"
+                class="com.symudo.blockclip.CopyCodeAction"
+                text="Copy Code"
+                description="Copy file content with relative path">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="after" relative-to-action="CopyPaths"/>
+            <add-to-group group-id="EditorTabPopupMenu" anchor="after" relative-to-action="CopyPaths"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+
+        <action id="com.symudo.blockclip.CopyFolderCodeAction"
+                class="com.symudo.blockclip.CopyFolderCodeAction"
+                text="Copy Folder Code"
+                description="Recursively copy folder contents with relative paths">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="after" relative-to-action="com.symudo.blockclip.CopyCodeAction"/>
+        </action>
+    </actions>
+</idea-plugin>
