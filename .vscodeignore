@@ -19,3 +19,5 @@ tsconfig.json
 .eslintignore
 biome.json
 lint-staged.config.js
+intellij-plugin/**
+dist/test/**

@@ -149,4 +149,54 @@ object MarkdownFormatter {
         val finalContent = formattedContents.joinToString("\n\n---\n\n")
         return ProcessResult(finalContent, formattedContents.size, stoppedEarly)
     }
+
+    fun formatClipItem(item: ClipItem, project: Project?): String {
+        val relativePath = item.relativePath.ifEmpty { getRelativePath(item.file, project) }
+        if (isBinaryFile(item.file)) {
+            return "File: $relativePath\n"
+        }
+
+        val fileContent = if (item.isSnippet) {
+            item.snippetContent ?: ""
+        } else {
+            val document = FileDocumentManager.getInstance().getDocument(item.file)
+            if (document != null) {
+                document.text
+            } else {
+                try {
+                    String(item.file.contentsToByteArray(), Charsets.UTF_8)
+                } catch (_: Exception) {
+                    ""
+                }
+            }
+        }
+
+        val language = item.language
+        val fence = getCodeFence(fileContent)
+        val header = if (item.lineRange != null) {
+            "File: $relativePath (${item.lineRange})"
+        } else {
+            "File: $relativePath"
+        }
+        return "$header\n\n$fence$language\n$fileContent\n$fence\n"
+    }
+
+    fun processClipItems(items: List<ClipItem>, project: Project?): ProcessResult {
+        val formattedContents = mutableListOf<String>()
+        var currentLength = 0
+        var stoppedEarly = false
+
+        for (item in items) {
+            val formatted = formatClipItem(item, project)
+            if (currentLength + formatted.length > MAX_CONTENT_LENGTH) {
+                stoppedEarly = true
+                break
+            }
+            formattedContents.add(formatted)
+            currentLength += formatted.length
+        }
+
+        val finalContent = formattedContents.joinToString("\n\n---\n\n")
+        return ProcessResult(finalContent, formattedContents.size, stoppedEarly)
+    }
 }

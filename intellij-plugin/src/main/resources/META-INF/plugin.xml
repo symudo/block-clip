@@ -9,6 +9,8 @@
     <ul>
         <li>Copy single or multiple files from project view, editor tab, or editor context.</li>
         <li>Copy entire folder recursively with smart .gitignore filtering.</li>
+        <li>Code Clip Stack: stash files and code snippets across project and copy all at once.</li>
+        <li>Snippet-level selection support with automatic line range tags.</li>
         <li>Dirty buffer first: copies latest unsaved changes from editor.</li>
         <li>Adaptive Markdown fences (prevents code block breakages).</li>
         <li>Smart language detection and binary file exclusion.</li>
@@ -43,5 +45,35 @@
                 description="Recursively copy folder contents with relative paths">
             <add-to-group group-id="ProjectViewPopupMenu" anchor="after" relative-to-action="com.symudo.blockclip.CopyCodeAction"/>
         </action>
+
+        <group id="com.symudo.blockclip.ClipStackActionGroup"
+               class="com.symudo.blockclip.ClipStackActionGroup"
+               text="Clip Stack"
+               popup="true">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="after" relative-to-action="com.symudo.blockclip.CopyFolderCodeAction"/>
+            <add-to-group group-id="EditorTabPopupMenu" anchor="after" relative-to-action="com.symudo.blockclip.CopyCodeAction"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="com.symudo.blockclip.CopyCodeAction"/>
+
+            <action id="com.symudo.blockclip.AddToStackAction"
+                    class="com.symudo.blockclip.AddToStackAction"
+                    text="Add to Clip Stack"/>
+            <action id="com.symudo.blockclip.CopyStackAction"
+                    class="com.symudo.blockclip.CopyStackAction"
+                    text="Copy All in Clip Stack"/>
+            <separator/>
+            <action id="com.symudo.blockclip.ManageStackAction"
+                    class="com.symudo.blockclip.ManageStackAction"
+                    text="Manage Clip Stack..."/>
+            <action id="com.symudo.blockclip.PopStackAction"
+                    class="com.symudo.blockclip.PopStackAction"
+                    text="Pop Last Item"/>
+            <action id="com.symudo.blockclip.RemoveFromStackAction"
+                    class="com.symudo.blockclip.RemoveFromStackAction"
+                    text="Remove Current File from Stack"/>
+            <separator/>
+            <action id="com.symudo.blockclip.ClearStackAction"
+                    class="com.symudo.blockclip.ClearStackAction"
+                    text="Clear Entire Clip Stack"/>
+        </group>
     </actions>
 </idea-plugin>

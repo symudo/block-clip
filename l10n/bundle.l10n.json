@@ -1,5 +1,6 @@
 {
   "Cannot get file path. Please use from the explorer or an editor tab.": "Cannot get file path. Please use from the explorer or an editor tab.",
+  "Cannot get file path.": "Cannot get file path.",
   "No valid files found in the selection.": "No valid files found in the selection.",
   "Copied {0} file(s). Some files were skipped due to size limits.": "Copied {0} file(s). Some files were skipped due to size limits.",
   "Copied contents of {0} file(s).": "Copied contents of {0} file(s).",
@@ -10,5 +11,25 @@
   "The selected folder is empty or contains no copyable files.": "The selected folder is empty or contains no copyable files.",
   "Copied {1} item(s) from folder '{0}'. Some files were skipped due to size limits.": "Copied {1} item(s) from folder '{0}'. Some files were skipped due to size limits.",
   "Copied {1} item(s) from folder '{0}'.": "Copied {1} item(s) from folder '{0}'.",
-  "Failed to copy folder content: {0}": "Failed to copy folder content: {0}"
+  "Failed to copy folder content: {0}": "Failed to copy folder content: {0}",
+  "Added code snippet ({0}) to clip stack. Total: {1} item(s).": "Added code snippet ({0}) to clip stack. Total: {1} item(s).",
+  "Added {0} file(s) to clip stack. Total: {1} item(s).": "Added {0} file(s) to clip stack. Total: {1} item(s).",
+  "Removed {0} item(s) from clip stack. Remaining: {1} item(s).": "Removed {0} item(s) from clip stack. Remaining: {1} item(s).",
+  "No matching items found in clip stack for this file.": "No matching items found in clip stack for this file.",
+  "Popped last item: {0}. Remaining: {1} item(s).": "Popped last item: {0}. Remaining: {1} item(s).",
+  "Clip stack is already empty.": "Clip stack is already empty.",
+  "Clip stack is empty. Add files or snippets first.": "Clip stack is empty. Add files or snippets first.",
+  "Copied {0} item(s) from clip stack. Some were skipped due to size limits.": "Copied {0} item(s) from clip stack. Some were skipped due to size limits.",
+  "Copied all {0} item(s) from clip stack to clipboard!": "Copied all {0} item(s) from clip stack to clipboard!",
+  "Cleared clip stack.": "Cleared clip stack.",
+  "Clip Stack contains {0} item(s). Click to manage or copy.": "Clip Stack contains {0} item(s). Click to manage or copy.",
+  "Copy All Stack Content to Clipboard": "Copy All Stack Content to Clipboard",
+  "Clear Entire Clip Stack": "Clear Entire Clip Stack",
+  "{0} item(s) in stack": "{0} item(s) in stack",
+  "Whole file": "Whole file",
+  "Whole file content": "Whole file content",
+  "Remove this item from stack": "Remove this item from stack",
+  "Clip Stack Manager ({0} items)": "Clip Stack Manager ({0} items)",
+  "Select an item to view, or click the trash button to delete it": "Select an item to view, or click the trash button to delete it",
+  "Removed selected item from clip stack.": "Removed selected item from clip stack."
 }

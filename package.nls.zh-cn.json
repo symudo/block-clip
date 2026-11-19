@@ -1,5 +1,12 @@
 {
   "extension.description": "将文件内容及其相对路径复制到剪贴板",
   "command.copyCode": "复制文件代码",
-  "command.copyFolderCode": "复制文件夹代码"
+  "command.copyFolderCode": "复制文件夹代码",
+  "submenu.clipStack": "代码暂存栈",
+  "command.addToStack": "加入暂存栈 (文件/选中代码)",
+  "command.copyStack": "复制暂存栈中的所有代码",
+  "command.manageStack": "管理暂存栈...",
+  "command.popFromStack": "撤销最后一条暂存项",
+  "command.removeFromStack": "从暂存栈移除当前文件相关项",
+  "command.clearStack": "清空暂存栈"
 }

@@ -1,5 +1,6 @@
 {
   "Cannot get file path. Please use from the explorer or an editor tab.": "无法获取文件路径，请在资源管理器或编辑器标签中使用。",
+  "Cannot get file path.": "无法获取文件路径。",
   "No valid files found in the selection.": "所选内容中不包含任何文件。",
   "Copied {0} file(s). Some files were skipped due to size limits.": "已复制 {0} 个文件的内容。因总大小超出限制，部分文件未被处理。",
   "Copied contents of {0} file(s).": "已复制 {0} 个文件的内容。",
@@ -10,5 +11,25 @@
   "The selected folder is empty or contains no copyable files.": "所选文件夹为空或不包含任何可复制的文件。",
   "Copied {1} item(s) from folder '{0}'. Some files were skipped due to size limits.": "已复制 {0} 文件夹中 {1} 个项目的内容。因总大小超出限制，部分文件未被处理。",
   "Copied {1} item(s) from folder '{0}'.": "已复制 {0} 文件夹中 {1} 个项目的内容。",
-  "Failed to copy folder content: {0}": "复制文件夹内容失败: {0}"
+  "Failed to copy folder content: {0}": "复制文件夹内容失败: {0}",
+  "Added code snippet ({0}) to clip stack. Total: {1} item(s).": "已将代码片段 ({0}) 添加到暂存栈 (当前共 {1} 项)。",
+  "Added {0} file(s) to clip stack. Total: {1} item(s).": "已添加 {0} 个文件到暂存栈 (当前共 {1} 项)。",
+  "Removed {0} item(s) from clip stack. Remaining: {1} item(s).": "已从暂存栈中移除 {0} 个相关项 (剩余 {1} 项)。",
+  "No matching items found in clip stack for this file.": "暂存栈中未找到该文件的相关内容。",
+  "Popped last item: {0}. Remaining: {1} item(s).": "已撤销上一条暂存: {0} (剩余 {1} 项)。",
+  "Clip stack is already empty.": "暂存栈已为空。",
+  "Clip stack is empty. Add files or snippets first.": "暂存栈为空，请先添加文件或代码片段。",
+  "Copied {0} item(s) from clip stack. Some were skipped due to size limits.": "已复制暂存栈中 {0} 项内容。因总大小超出限制，部分内容未被处理。",
+  "Copied all {0} item(s) from clip stack to clipboard!": "已复制暂存栈中全部 {0} 项内容到剪贴板！",
+  "Cleared clip stack.": "已清空暂存栈。",
+  "Clip Stack contains {0} item(s). Click to manage or copy.": "代码暂存栈内有 {0} 项内容。点击可管理或一键复制。",
+  "Copy All Stack Content to Clipboard": "复制暂存栈全部内容到剪贴板",
+  "Clear Entire Clip Stack": "一键清空暂存栈",
+  "{0} item(s) in stack": "栈内共 {0} 项",
+  "Whole file": "完整文件",
+  "Whole file content": "完整文件内容",
+  "Remove this item from stack": "从暂存栈中删除此项",
+  "Clip Stack Manager ({0} items)": "代码暂存栈管理器 ({0} 项)",
+  "Select an item to view, or click the trash button to delete it": "选择条目可直接跳转查看，点击垃圾桶图标可单条移除",
+  "Removed selected item from clip stack.": "已从暂存栈中删除所选条目。"
 }

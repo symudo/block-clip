@@ -1,5 +1,12 @@
 {
   "extension.description": "Copies file content with its relative path to the clipboard",
   "command.copyCode": "Copy Code",
-  "command.copyFolderCode": "Copy Folder Code"
+  "command.copyFolderCode": "Copy Folder Code",
+  "submenu.clipStack": "Clip Stack",
+  "command.addToStack": "Add to Clip Stack",
+  "command.copyStack": "Copy All in Clip Stack",
+  "command.manageStack": "Manage Clip Stack...",
+  "command.popFromStack": "Pop Last Item from Clip Stack",
+  "command.removeFromStack": "Remove Current File from Clip Stack",
+  "command.clearStack": "Clear Entire Clip Stack"
 }

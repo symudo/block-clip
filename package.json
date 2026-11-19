@@ -2,7 +2,7 @@
   "name": "block-clip",
   "displayName": "blockClip",
   "description": "%extension.description%",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "yuchuan",
   "l10n": "./l10n",
   "license": "MIT",
@@ -27,9 +27,65 @@
       {
         "command": "copy-code-with-path.copyFolderCode",
         "title": "%command.copyFolderCode%"
+      },
+      {
+        "command": "copy-code-with-path.addToStack",
+        "title": "%command.addToStack%"
+      },
+      {
+        "command": "copy-code-with-path.copyStack",
+        "title": "%command.copyStack%"
+      },
+      {
+        "command": "copy-code-with-path.manageStack",
+        "title": "%command.manageStack%"
+      },
+      {
+        "command": "copy-code-with-path.popFromStack",
+        "title": "%command.popFromStack%"
+      },
+      {
+        "command": "copy-code-with-path.removeFromStack",
+        "title": "%command.removeFromStack%"
+      },
+      {
+        "command": "copy-code-with-path.clearStack",
+        "title": "%command.clearStack%"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "copy-code-with-path.stackSubmenu",
+        "label": "%submenu.clipStack%"
       }
     ],
     "menus": {
+      "copy-code-with-path.stackSubmenu": [
+        {
+          "command": "copy-code-with-path.addToStack",
+          "group": "1_action@1"
+        },
+        {
+          "command": "copy-code-with-path.copyStack",
+          "group": "1_action@2"
+        },
+        {
+          "command": "copy-code-with-path.manageStack",
+          "group": "2_manage@1"
+        },
+        {
+          "command": "copy-code-with-path.popFromStack",
+          "group": "2_manage@2"
+        },
+        {
+          "command": "copy-code-with-path.removeFromStack",
+          "group": "2_manage@3"
+        },
+        {
+          "command": "copy-code-with-path.clearStack",
+          "group": "3_clear@1"
+        }
+      ],
       "explorer/context": [
         {
           "when": "resourceScheme == 'file' && !explorerResourceIsFolder",
@@ -40,6 +96,11 @@
           "when": "resourceScheme == 'file' && explorerResourceIsFolder",
           "command": "copy-code-with-path.copyFolderCode",
           "group": "navigation@5"
+        },
+        {
+          "when": "resourceScheme == 'file' && !explorerResourceIsFolder",
+          "submenu": "copy-code-with-path.stackSubmenu",
+          "group": "navigation@6"
         }
       ],
       "editor/title/context": [
@@ -47,6 +108,11 @@
           "when": "resourceScheme == 'file'",
           "command": "copy-code-with-path.copyCode",
           "group": "navigation@5"
+        },
+        {
+          "when": "resourceScheme == 'file'",
+          "submenu": "copy-code-with-path.stackSubmenu",
+          "group": "navigation@6"
         }
       ],
       "editor/context": [
@@ -54,6 +120,11 @@
           "when": "resourceScheme == 'file'",
           "command": "copy-code-with-path.copyCode",
           "group": "9_cutcopypaste@100"
+        },
+        {
+          "when": "resourceScheme == 'file'",
+          "submenu": "copy-code-with-path.stackSubmenu",
+          "group": "9_cutcopypaste@101"
         }
       ]
     }
@@ -63,9 +134,9 @@
     "build": "node esbuild.config.js",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "pretest": "pnpm run compile && pnpm run lint",
-    "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js",
+    "pretest": "pnpm run compile && pnpm run check",
+    "lint": "pnpm exec biome check",
+    "test": "pnpm run compile && node --test dist/test/*.test.js",
     "check": "pnpm exec biome check",
     "format": "pnpm exec biome format --write",
     "prepare": "simple-git-hooks",
