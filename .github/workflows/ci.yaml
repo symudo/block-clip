@@ -21,6 +21,7 @@ jobs:
         with:
           fetch-depth: 0
 
+      # ------------------- 1. VS Code 端校验 -------------------
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -40,6 +41,15 @@ jobs:
           pnpm run compile
           pnpm run check
 
-      # 如果有测试用例，可以在这里开启
-      # - name: Run Headless Test
-      #   run: xvfb-run -a pnpm run test
+      # ------------------- 2. IntelliJ 插件端校验 -------------------
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Test IntelliJ Plugin
+        run: |
+          cd intellij-plugin
+          chmod +x ./gradlew
+          ./gradlew test

@@ -1,32 +1,64 @@
-# BlockClip (Copy Code with filename)
+# BlockClip (Copy Code with relative path)
 
-一款简洁而强大的跨平台代码复制增强工具（现已同时支持 **VS Code** 与 **JetBrains 全系列 IDE，如 IntelliJ IDEA / WebStorm**），旨在让你能够高效地复制文件或文件夹的代码内容，并自动附带其相对路径，输出为格式优美的 Markdown。
+一款简洁而强大的跨平台代码复制增强工具，支持 **VS Code** 与 **JetBrains 全系列 IDE（IntelliJ IDEA、WebStorm、PyCharm、GoLand、CLion 等）**。
 
-> 💡 **JetBrains (IDEA / WebStorm) 用户**：请参阅 [intellij-plugin 文档与使用指南](./intellij-plugin/README.md)。
+旨在让你能够高效地复制文件或文件夹的代码内容，并自动附带其相对于项目的路径，输出为格式优美的 Markdown 代码块。
 
-无论是编写技术文档、向AI提问、还是与同事分享代码片段，这个插件都能帮你保留重要的文件上下文，让沟通更清晰。
+无论是向 AI 助手提问（如 ChatGPT、Claude、DeepSeek）、编写技术文档，还是与团队同事分享代码，都能完整保留上下文与结构。
 
-## ✨ 功能特性
+---
 
-  * **复制单个文件**: 右键单击任何文件、文件标签页（Tab）或在编辑器编辑区任意位置右键，即可复制其完整内容和路径。
-  * **编辑器内与标签页右键支持**: 直接在已打开文件的标签或代码编辑区右键点击即可快捷复制。
-  * **复制多个文件**: 同时选择多个文件，一键复制所有文件的内容。
-  * **复制文件夹**: 右键单击一个文件夹，递归复制其中所有文件的内容（智能识别根目录与子目录 `.gitignore` 规则）。
-  * **所见即所得**: 优先复制当前编辑器中已修改但尚未保存的最新内容。
-  * **多语言支持**: 完整国际化（i18n），自动跟随 VS Code 显示语言（支持中文与英文）。
-  * **智能格式化**: 输出内容自动包裹在 Markdown 代码块中，智能识别语言类型，且自适应避免 Markdown 嵌套截断。
-  * **保留上下文**: 每个代码块前都会清晰标出文件相对于工作区的路径。
+## ✨ 核心特性
 
-## 🚀 使用指南
+- **多处右键直达**：
+  - **项目文件树右键**：支持单文件、多文件批量选择、以及文件夹递归复制代码。
+  - **编辑器文件标签页（Tab）右键**：快速复制当前已打开文件的代码。
+  - **代码编辑区内任意位置右键**：无需移动鼠标至边缘，在代码区右键一键复制，保持专注心流。
+- **所见即所得（Dirty Document First）**：
+  - 复制时优先读取内存中已修改但尚未保存（`Ctrl+S`）的内容，告别传统插件直接读取磁盘旧代码的痛点。
+- **智能 Markdown 包裹**：
+  - 自动识别文件语言（JavaScript, TypeScript, Python, Rust, Go, Java, Kotlin, C/C++, HTML, CSS, Vue, Svelte, YAML 等）。
+  - **自适应反引号防截断**：自动根据代码内部连续反引号数量增加外层反引号，防止输出至 Markdown 时语法断裂。
+  - **二进制文件过滤**：针对图片、音视频、压缩包等非文本文件仅输出路径标识，杜绝乱码污染剪贴板。
+- **文件夹递归与 .gitignore 规则级联**：
+  - 智能级联读取项目根目录及当前文件夹的 `.gitignore` 过滤规则。
+  - 默认忽略 `.git`、`node_modules`、`dist`、`build`、`.idea`、`.vscode` 等目录。
+  - 内置 15MB 保护阈值，防止意外超大内容溢出。
+- **原生多语言国际化 (i18n)**：
+  - 菜单名称、描述以及操作完成后的提示气泡，完全根据 IDE 当前界面语言自动切换（支持简体中文与英文）。
 
-所有功能都通过 VS Code 资源管理器的右键上下文菜单触发。
+---
 
-### 1\. 复制单个文件
+## 🚀 安装方法
 
-在文件浏览器中，右键点击你想要复制的文件（例如 `src/extension.ts`），然后选择 **Copy Code**。
+你可以在 [GitHub Releases](https://github.com/symudo/block-clip/releases) 页面下载最新构建好的双端插件安装包。
 
-**剪贴板中的内容会是这样：**
+### 1. Visual Studio Code
 
+- **方式一（本地离线安装）**：
+  1. 在 [Releases](https://github.com/symudo/block-clip/releases) 中下载 `block-clip-x.x.x.vsix`；
+  2. 打开 VS Code，按下 `Ctrl+Shift+X`（macOS 为 `Cmd+Shift+X`）打开扩展面板；
+  3. 点击扩展面板右上角的 `...` 菜单，选择 **从 VSIX 安装... (Install from VSIX...)**；
+  4. 选择下载的 `.vsix` 文件完成安装。
+
+- **方式二（VS Code Marketplace 安装）**：
+  在扩展商店中搜索 `blockClip` 或 `Copy Code with filename` 并点击安装。
+
+### 2. JetBrains IDE（IntelliJ IDEA / WebStorm 等）
+
+支持全系列 JetBrains 平台（版本 2024.1+）：
+1. 在 [Releases](https://github.com/symudo/block-clip/releases) 中下载 `block-clip-intellij-x.x.x.zip`；
+2. 打开 IntelliJ IDEA、WebStorm 或其他 JetBrains IDE；
+3. 打开设置（Windows/Linux: `Ctrl + Alt + S`，macOS: `Cmd + ,`）；
+4. 进入 **Plugins（插件）**，点击右上角齿轮 ⚙️ 图标；
+5. 选择 **Install Plugin from Disk...（从磁盘安装插件...）**；
+6. 选中下载的 `.zip` 压缩包并确认，即可立即启用！
+
+---
+
+## 📖 复制效果示例
+
+### 单个文件复制：
 ````markdown
 File: src/extension.ts
 
@@ -34,61 +66,41 @@ File: src/extension.ts
 import * as path from 'node:path'
 import * as vscode from 'vscode'
 
-// ... a's a'f'f'f'f ...
-
-export function deactivate() {}
+export function activate(context: vscode.ExtensionContext) {
+  // ...
+}
 ```
 ````
 
-### 2\. 复制多个文件
-
-按住 `Ctrl` (Windows/Linux) 或 `Cmd` (Mac) 并点选多个文件。然后，在任意一个选中的文件上右键，选择 **Copy Code**。
-
-**剪贴板中的内容会是这样 (示例：复制 `package.json` 和 `src/extension.ts`):**
-
+### 多个文件复制：
 ````markdown
 File: package.json
 
 ```json
 {
-  "name": "copy-code-with-filename",
-  "displayName": " Copy Code with filename",
-  // ... a's a'f'f'f'f ...
+  "name": "block-clip",
+  "version": "0.2.0"
 }
 ```
 
-
 ---
-
 
 File: src/extension.ts
 
 ```typescript
-import * as path from 'node:path'
-import * as vscode from 'vscode'
-
-// ... a's a'f'f'f'f ...
-
-export function deactivate() {}
+// ...
 ```
 ````
 
-### 3\. 复制文件夹内容
+---
 
-在文件浏览器中，右键点击你想要复制的文件夹（例如 `src`），然后选择 **Copy Folder Code**。扩展将会递归地读取该文件夹下的所有文件内容并复制。
+## 🛠️ 云端持续集成与自动化发布
 
-**剪贴板中的内容将会包含 `src/` 目录下所有文件的内容，格式与多文件复制相同。**
+本项目通过 GitHub Actions 实现完整的 CI/CD 流程：
+- 每次推送代码均自动执行 VS Code 端与 IntelliJ 端的编译、代码规范和测试；
+- 每次推送版本标签（`v*`），GitHub Actions 会在云端全自动构建出适用于 VS Code 的 `.vsix` 和适用于 JetBrains IDE 的 `.zip` 插件包，并自动附带 `CHANGELOG.md` 更新日志发布至 GitHub Releases。
 
-## 💻 安装
-
-1.  打开 **Visual Studio Code**。
-2.  按下 `Ctrl+Shift+X` 打开 **扩展** 侧边栏。
-3.  在搜索框中输入 `Copy Code with filename`。
-4.  找到本扩展，点击 **Install** 按钮。
-
-## 🤝 贡献
-
-如果你发现了 Bug 或者有功能建议，欢迎到 [GitHub 仓库](https://www.google.com/search?q=https://github.com/savageKarl/copy-code-with-filename) 提交 Issue。
+---
 
 ## 📜 许可证
 
