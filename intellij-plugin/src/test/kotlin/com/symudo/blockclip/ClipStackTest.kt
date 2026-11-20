@@ -2,6 +2,7 @@ package com.symudo.blockclip
 
 import com.intellij.openapi.vfs.VirtualFile
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.io.InputStream
@@ -9,7 +10,7 @@ import java.io.OutputStream
 
 class ClipStackTest {
 
-    private class DummyVirtualFile(private val fileName: String) : VirtualFile() {
+    private class DummyVirtualFile(private val fileName: String, private val rawContent: String = "") : VirtualFile() {
         override fun getName(): String = fileName
         override fun getFileSystem() = throw UnsupportedOperationException()
         override fun getPath(): String = "/project/$fileName"
@@ -20,12 +21,21 @@ class ClipStackTest {
         override fun getChildren(): Array<VirtualFile> = emptyArray()
         override fun getOutputStream(requestor: Any?, newModificationStamp: Long, newTimeStamp: Long): OutputStream =
             throw UnsupportedOperationException()
-        override fun contentsToByteArray(): ByteArray = byteArrayOf()
+        override fun contentsToByteArray(): ByteArray = rawContent.toByteArray(Charsets.UTF_8)
         override fun getTimeStamp(): Long = 0
-        override fun getLength(): Long = 0
+        override fun getLength(): Long = rawContent.length.toLong()
         override fun refresh(asynchronous: Boolean, recursive: Boolean, postRunnable: Runnable?) {}
         override fun getInputStream(): InputStream = throw UnsupportedOperationException()
         override fun getExtension(): String = fileName.substringAfterLast('.', "")
+    }
+
+    @Test
+    fun testFormatSelectionDirectCopy() {
+        val mockFile = DummyVirtualFile("App.tsx")
+        val formatted = MarkdownFormatter.formatSelection(mockFile, null, "return <div />;", "lines 12-14")
+        assertTrue(formatted.startsWith("File: App.tsx (lines 12-14)\n\n```typescriptreact\n"))
+        assertTrue(formatted.contains("return <div />;"))
+        assertTrue(formatted.endsWith("```\n"))
     }
 
     @Test
@@ -66,47 +76,32 @@ class ClipStackTest {
     }
 
     @Test
-    fun testStackBasicOperations() {
-        val mockFile1 = DummyVirtualFile("A.ts")
-        val mockFile2 = DummyVirtualFile("B.ts")
-
-        val items = mutableListOf<ClipItem>()
-
+    fun testProcessClipItemsAndMaxLengthTruncation() {
+        val mockFile = DummyVirtualFile("A.ts", "export const a = 1;")
         val item1 = ClipItem(
-            file = mockFile1,
+            file = mockFile,
             relativePath = "src/A.ts",
             language = "typescript",
             isSnippet = false
         )
-        val snippetA = ClipItem(
-            file = mockFile1,
+        val item2 = ClipItem(
+            file = mockFile,
             relativePath = "src/A.ts",
             language = "typescript",
             isSnippet = true,
-            lineRange = "lines 1-10",
-            snippetContent = "export const x = 1;"
-        )
-        val item2 = ClipItem(
-            file = mockFile2,
-            relativePath = "src/B.ts",
-            language = "typescript",
-            isSnippet = false
+            lineRange = "line 5",
+            snippetContent = "export const b = 2;"
         )
 
-        items.add(item1)
-        items.add(snippetA)
-        items.add(item2)
-        assertEquals(3, items.size)
+        val fullResult = MarkdownFormatter.processClipItems(listOf(item1, item2), null)
+        assertEquals(2, fullResult.processedCount)
+        assertFalse(fullResult.stoppedEarly)
+        assertTrue(fullResult.content.contains("export const a = 1;"))
+        assertTrue(fullResult.content.contains("File: src/A.ts (line 5)"))
 
-        // 验证 pop LIFO
-        val popped = items.removeAt(items.size - 1)
-        assertEquals("src/B.ts", popped.relativePath)
-        assertEquals(2, items.size)
-
-        // 验证根据 ID 删除单条
-        val removed = items.removeIf { it.id == snippetA.id }
-        assertTrue(removed)
-        assertEquals(1, items.size)
-        assertEquals(item1.id, items[0].id)
+        // 限制长度触发提前截断
+        val truncated = MarkdownFormatter.processClipItems(listOf(item1, item2), null, maxLength = 70)
+        assertEquals(1, truncated.processedCount)
+        assertTrue(truncated.stoppedEarly)
     }
 }

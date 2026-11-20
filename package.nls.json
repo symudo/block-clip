@@ -1,5 +1,6 @@
 {
   "extension.description": "Copies file content with its relative path to the clipboard",
+  "command.copySelection": "Copy Selected Code",
   "command.copyCode": "Copy Code",
   "command.copyFolderCode": "Copy Folder Code",
   "submenu.clipStack": "Clip Stack",

@@ -1,8 +1,18 @@
 import assert from 'node:assert'
 import { describe, it } from 'node:test'
-import { formatFileBlock, getCodeFence, getLanguage, isBinaryFile } from '../formatter'
+import {
+  estimateTokens,
+  formatBytes,
+  formatFileBlock,
+  formatLineRange,
+  formatStats,
+  getCodeFence,
+  getLanguage,
+  isBinaryFile,
+  isSensitiveFile
+} from '../formatter'
 
-describe('Formatter & Stack Helpers', () => {
+describe('Formatter & Helpers', () => {
   it('identifies binary files correctly', () => {
     assert.strictEqual(isBinaryFile('image.png'), true)
     assert.strictEqual(isBinaryFile('song.mp3'), true)
@@ -11,18 +21,57 @@ describe('Formatter & Stack Helpers', () => {
     assert.strictEqual(isBinaryFile('README.md'), false)
   })
 
+  it('identifies sensitive files while allowing safe env templates', () => {
+    assert.strictEqual(isSensitiveFile('/proj/.env'), true)
+    assert.strictEqual(isSensitiveFile('/proj/.env.local'), true)
+    assert.strictEqual(isSensitiveFile('/proj/.env.production'), true)
+    assert.strictEqual(isSensitiveFile('/proj/cert/server.pem'), true)
+    assert.strictEqual(isSensitiveFile('/proj/private.key'), true)
+    assert.strictEqual(isSensitiveFile('/home/.ssh/id_rsa'), true)
+
+    assert.strictEqual(isSensitiveFile('/proj/.env.example'), false)
+    assert.strictEqual(isSensitiveFile('/proj/.env.sample'), false)
+    assert.strictEqual(isSensitiveFile('/proj/.env.template'), false)
+    assert.strictEqual(isSensitiveFile('/proj/.env.dist'), false)
+    assert.strictEqual(isSensitiveFile('/proj/src/env.ts'), false)
+  })
+
   it('resolves languages properly', () => {
     assert.strictEqual(getLanguage('main.py'), 'python')
     assert.strictEqual(getLanguage('app.tsx'), 'typescriptreact')
     assert.strictEqual(getLanguage('Cargo.toml'), 'toml')
     assert.strictEqual(getLanguage('unknown.xyz'), 'xyz')
     assert.strictEqual(getLanguage('noext'), 'plaintext')
+    assert.strictEqual(getLanguage('file.txt', 'typescript'), 'typescript')
   })
 
   it('calculates adaptive code fences correctly', () => {
     assert.strictEqual(getCodeFence('const a = 1;'), '```')
     assert.strictEqual(getCodeFence('```js\nconst a = 1;\n```'), '````')
     assert.strictEqual(getCodeFence('````markdown\n```\n````'), '`````')
+  })
+
+  it('formats line ranges and fixes trailing-newline off-by-one', () => {
+    assert.strictEqual(formatLineRange(0, 0, 10), 'line 1')
+    assert.strictEqual(formatLineRange(9, 14, 5), 'lines 10-15')
+    // 选整行拖到下一行第 0 列，不应多算一行
+    assert.strictEqual(formatLineRange(9, 15, 0), 'lines 10-15')
+    assert.strictEqual(formatLineRange(9, 10, 0), 'line 10')
+  })
+
+  it('estimates tokens and formats size stats accurately', () => {
+    assert.strictEqual(estimateTokens(''), 0)
+    assert.strictEqual(estimateTokens('abcd'), 1)
+    assert.strictEqual(estimateTokens('a'.repeat(400)), 100)
+    // 中文字符每字约 0.67 token
+    assert.ok(estimateTokens('你好世界测试代码') >= 5)
+
+    assert.strictEqual(formatBytes(512), '512 B')
+    assert.strictEqual(formatBytes(2048), '2.0 KB')
+    assert.strictEqual(formatBytes(2 * 1024 * 1024), '2.00 MB')
+
+    const stats = formatStats('console.log("hello world");')
+    assert.match(stats, /\d+(\.\d+)? (B|KB|MB), ~\d+(\.\d+k)? tokens/)
   })
 
   it('formats whole file block properly', () => {

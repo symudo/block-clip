@@ -2,10 +2,13 @@ package com.symudo.blockclip
 
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.actionSystem.ActionPlaces
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.vfs.VirtualFile
@@ -17,9 +20,25 @@ class CopyCodeAction : AnAction(), DumbAware {
         return ActionUpdateThread.BGT
     }
 
+    private fun shouldCopyEditorSelection(e: AnActionEvent): Editor? {
+        // 在项目树或标签页右键时，始终复制整文件，不被编辑器遗留选区干扰
+        if (e.place == ActionPlaces.PROJECT_VIEW_POPUP || e.place == ActionPlaces.EDITOR_TAB_POPUP) {
+            return null
+        }
+        val editor = e.getData(CommonDataKeys.EDITOR) ?: return null
+        return if (editor.selectionModel.hasSelection()) editor else null
+    }
+
     override fun update(e: AnActionEvent) {
+        val selectionEditor = shouldCopyEditorSelection(e)
+        if (selectionEditor != null) {
+            e.presentation.isEnabledAndVisible = true
+            e.presentation.text = BlockClipBundle.message("action.CopySelection.text")
+            e.presentation.description = BlockClipBundle.message("action.CopySelection.description")
+            return
+        }
+
         val files = getTargetFiles(e)
-        // 只要存在选中的非目录文件，或者在活动的文本编辑器中，即显示并启用
         val hasFiles = files.any { !it.isDirectory }
         e.presentation.isEnabledAndVisible = hasFiles
         e.presentation.text = BlockClipBundle.message("action.CopyCode.text")
@@ -28,8 +47,34 @@ class CopyCodeAction : AnAction(), DumbAware {
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project
-        val files = getTargetFiles(e).filter { !it.isDirectory }
 
+        // 场景 A: 编辑器内有选中文本，直接复制选区（带相对路径、行号与体积/Token 估算）
+        val selectionEditor = shouldCopyEditorSelection(e)
+        if (selectionEditor != null) {
+            val selectionModel = selectionEditor.selectionModel
+            val selectedText = selectionModel.selectedText ?: ""
+            val document = selectionEditor.document
+            val startLineIdx = document.getLineNumber(selectionModel.selectionStart)
+            val endLineIdx = document.getLineNumber(selectionModel.selectionEnd)
+            val endCol = selectionModel.selectionEnd - document.getLineStartOffset(endLineIdx)
+            val lineRange = MarkdownFormatter.formatLineRange(startLineIdx, endLineIdx, endCol)
+
+            val file = FileDocumentManager.getInstance().getFile(document)
+            if (file != null) {
+                val formatted = MarkdownFormatter.formatSelection(file, project, selectedText, lineRange)
+                CopyPasteManager.getInstance().setContents(StringSelection(formatted))
+                val stats = MarkdownFormatter.formatStats(formatted)
+                notify(
+                    project,
+                    BlockClipBundle.message("notification.copied.snippet", file.name, lineRange, stats),
+                    NotificationType.INFORMATION
+                )
+                return
+            }
+        }
+
+        // 场景 B: 单文件 / 多文件复制
+        val files = getTargetFiles(e).filter { !it.isDirectory }
         if (files.isEmpty()) {
             notify(
                 project,
@@ -42,19 +87,23 @@ class CopyCodeAction : AnAction(), DumbAware {
         try {
             val result = MarkdownFormatter.processFiles(files, project)
             CopyPasteManager.getInstance().setContents(StringSelection(result.content))
+            val stats = MarkdownFormatter.formatStats(result.content)
 
             val message = when {
                 result.stoppedEarly -> BlockClipBundle.message(
                     "notification.copied.truncated.files",
-                    result.processedCount
+                    result.processedCount,
+                    stats
                 )
                 files.size > 1 -> BlockClipBundle.message(
                     "notification.copied.multiple",
-                    files.size
+                    files.size,
+                    stats
                 )
                 else -> BlockClipBundle.message(
                     "notification.copied.single",
-                    files[0].name
+                    files[0].name,
+                    stats
                 )
             }
 
@@ -83,7 +132,7 @@ class CopyCodeAction : AnAction(), DumbAware {
         val editor = e.getData(CommonDataKeys.EDITOR)
         val document = editor?.document
         if (document != null) {
-            val virtualFile = com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().getFile(document)
+            val virtualFile = FileDocumentManager.getInstance().getFile(document)
             if (virtualFile != null) {
                 return listOf(virtualFile)
             }

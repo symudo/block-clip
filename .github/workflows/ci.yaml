@@ -36,10 +36,9 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Type Check & Lint
+      - name: Type Check, Lint & Test
         run: |
-          pnpm run compile
-          pnpm run check
+          pnpm test
 
       # ------------------- 2. IntelliJ 插件端校验 -------------------
       - name: Setup Java

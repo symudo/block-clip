@@ -2,7 +2,7 @@
   "name": "block-clip",
   "displayName": "blockClip",
   "description": "%extension.description%",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "yuchuan",
   "l10n": "./l10n",
   "license": "MIT",
@@ -20,6 +20,10 @@
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
+      {
+        "command": "copy-code-with-path.copySelection",
+        "title": "%command.copySelection%"
+      },
       {
         "command": "copy-code-with-path.copyCode",
         "title": "%command.copyCode%"
@@ -51,6 +55,22 @@
       {
         "command": "copy-code-with-path.clearStack",
         "title": "%command.clearStack%"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "copy-code-with-path.copyCode",
+        "key": "alt+shift+b",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "copy-code-with-path.addToStack",
+        "key": "alt+shift+s",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "copy-code-with-path.copyStack",
+        "key": "alt+shift+x"
       }
     ],
     "submenus": [
@@ -98,7 +118,7 @@
           "group": "navigation@5"
         },
         {
-          "when": "resourceScheme == 'file' && !explorerResourceIsFolder",
+          "when": "resourceScheme == 'file'",
           "submenu": "copy-code-with-path.stackSubmenu",
           "group": "navigation@6"
         }
@@ -116,6 +136,11 @@
         }
       ],
       "editor/context": [
+        {
+          "when": "resourceScheme == 'file' && editorHasSelection",
+          "command": "copy-code-with-path.copySelection",
+          "group": "9_cutcopypaste@99"
+        },
         {
           "when": "resourceScheme == 'file'",
           "command": "copy-code-with-path.copyCode",

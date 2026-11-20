@@ -1,5 +1,6 @@
 package com.symudo.blockclip
 
+import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionUpdateThread
@@ -36,15 +37,26 @@ class CopyStackAction : AnAction(), DumbAware {
         try {
             val result = stackService.formatAll()
             CopyPasteManager.getInstance().setContents(StringSelection(result.content))
+            val stats = MarkdownFormatter.formatStats(result.content)
 
             val message = if (result.stoppedEarly) {
-                BlockClipBundle.message("notification.stack.copied.truncated", result.processedCount)
+                BlockClipBundle.message("notification.stack.copied.truncated", result.processedCount, stats)
             } else {
-                BlockClipBundle.message("notification.stack.copied.all", result.processedCount)
+                BlockClipBundle.message("notification.stack.copied.all", result.processedCount, stats)
             }
 
             val type = if (result.stoppedEarly) NotificationType.WARNING else NotificationType.INFORMATION
-            notify(project, message, type)
+            val notification = NotificationGroupManager.getInstance()
+                .getNotificationGroup("BlockClip Notification")
+                .createNotification(message, type)
+
+            notification.addAction(
+                NotificationAction.createSimpleExpiring(BlockClipBundle.message("action.ClearStack.short.text")) {
+                    stackService.clear()
+                    notify(project, BlockClipBundle.message("notification.stack.cleared"), NotificationType.INFORMATION)
+                }
+            )
+            notification.notify(project)
         } catch (ex: Exception) {
             notify(
                 project,

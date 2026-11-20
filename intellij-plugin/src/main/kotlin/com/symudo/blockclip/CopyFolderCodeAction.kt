@@ -7,6 +7,9 @@ import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.ide.CopyPasteManager
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.vfs.VirtualFile
 import java.awt.datatransfer.StringSelection
@@ -38,46 +41,62 @@ class CopyFolderCodeAction : AnAction(), DumbAware {
             return
         }
 
-        try {
-            val projectBaseDir = project?.basePath?.let { File(it) }
-            val files = GitIgnoreFilter.collectAllFiles(folder, projectBaseDir)
+        val folderName = folder.name
+        ProgressManager.getInstance().run(object : Task.Backgroundable(
+            project,
+            BlockClipBundle.message("progress.copying.folder", folderName),
+            true
+        ) {
+            override fun run(indicator: ProgressIndicator) {
+                indicator.isIndeterminate = true
+                try {
+                    val projectBaseDir = project?.basePath?.let { File(it) }
+                    val files = GitIgnoreFilter.collectAllFiles(folder, projectBaseDir, indicator)
 
-            if (files.isEmpty()) {
-                notify(
-                    project,
-                    BlockClipBundle.message("notification.empty.folder"),
-                    NotificationType.WARNING
-                )
-                return
+                    if (files.isEmpty()) {
+                        notify(
+                            project,
+                            BlockClipBundle.message("notification.empty.folder"),
+                            NotificationType.WARNING
+                        )
+                        return
+                    }
+
+                    indicator.checkCanceled()
+                    val result = MarkdownFormatter.processFiles(files, project)
+                    CopyPasteManager.getInstance().setContents(StringSelection(result.content))
+                    val stats = MarkdownFormatter.formatStats(result.content)
+
+                    val message = if (result.stoppedEarly) {
+                        BlockClipBundle.message(
+                            "notification.copied.truncated.folder",
+                            folderName,
+                            result.processedCount,
+                            stats
+                        )
+                    } else {
+                        BlockClipBundle.message(
+                            "notification.copied.folder",
+                            folderName,
+                            files.size,
+                            stats
+                        )
+                    }
+
+                    val type = if (result.stoppedEarly) NotificationType.WARNING else NotificationType.INFORMATION
+                    notify(project, message, type)
+                } catch (ex: Exception) {
+                    if (ex is com.intellij.openapi.progress.ProcessCanceledException) {
+                        throw ex
+                    }
+                    notify(
+                        project,
+                        BlockClipBundle.message("notification.error.folder", ex.message ?: "Unknown error"),
+                        NotificationType.ERROR
+                    )
+                }
             }
-
-            val result = MarkdownFormatter.processFiles(files, project)
-            CopyPasteManager.getInstance().setContents(StringSelection(result.content))
-
-            val folderName = folder.name
-            val message = if (result.stoppedEarly) {
-                BlockClipBundle.message(
-                    "notification.copied.truncated.folder",
-                    folderName,
-                    result.processedCount
-                )
-            } else {
-                BlockClipBundle.message(
-                    "notification.copied.folder",
-                    folderName,
-                    files.size
-                )
-            }
-
-            val type = if (result.stoppedEarly) NotificationType.WARNING else NotificationType.INFORMATION
-            notify(project, message, type)
-        } catch (ex: Exception) {
-            notify(
-                project,
-                BlockClipBundle.message("notification.error.folder", ex.message ?: "Unknown error"),
-                NotificationType.ERROR
-            )
-        }
+        })
     }
 
     private fun getTargetFolder(e: AnActionEvent): VirtualFile? {

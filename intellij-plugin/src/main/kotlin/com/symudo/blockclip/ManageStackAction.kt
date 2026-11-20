@@ -77,7 +77,8 @@ class ManageStackAction : AnAction(), DumbAware {
                                     NotificationType.INFORMATION
                                 )
                             } else if (actionTitle == BlockClipBundle.message("action.jump.to.item")) {
-                                val descriptor = OpenFileDescriptor(project, item.file)
+                                val startLineZeroBased = MarkdownFormatter.parseStartLineZeroBased(item.lineRange)
+                                val descriptor = OpenFileDescriptor(project, item.file, startLineZeroBased, 0)
                                 FileEditorManager.getInstance(project).openTextEditor(descriptor, true)
                             }
                             return FINAL_CHOICE

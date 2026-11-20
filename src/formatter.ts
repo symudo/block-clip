@@ -50,6 +50,12 @@ export const binaryFileExtensions = new Set([
   'ds_store'
 ])
 
+const sensitiveExtensions = new Set(['pem', 'key', 'p12', 'pfx', 'jks', 'keystore'])
+
+const sensitiveExactNames = new Set(['id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', '.npmrc', '.pypirc', '.netrc'])
+
+const safeEnvSuffixes = ['.example', '.sample', '.template', '.dist']
+
 export const extensionToLanguageMap: Record<string, string> = {
   js: 'javascript',
   mjs: 'javascript',
@@ -98,6 +104,25 @@ export function isBinaryFile(filePath: string): boolean {
   return binaryFileExtensions.has(extension)
 }
 
+/**
+ * 判断是否为常见敏感文件（如 .env、密钥证书等）。
+ * 保留 .env.example / .env.sample / .env.template / .env.dist 模板文件。
+ */
+export function isSensitiveFile(filePath: string): boolean {
+  const baseName = path.basename(filePath).toLowerCase()
+
+  if (sensitiveExactNames.has(baseName)) {
+    return true
+  }
+
+  if (baseName === '.env' || baseName.startsWith('.env.')) {
+    return !safeEnvSuffixes.some((suffix) => baseName.endsWith(suffix))
+  }
+
+  const extension = path.extname(baseName).substring(1)
+  return sensitiveExtensions.has(extension)
+}
+
 export function getLanguage(filePath: string, knownLanguageId?: string): string {
   if (knownLanguageId && knownLanguageId !== 'plaintext') {
     return knownLanguageId
@@ -121,6 +146,64 @@ export function getCodeFence(content: string): string {
     }
   }
   return '`'.repeat(maxBackticks)
+}
+
+/**
+ * 计算人类可读的行号范围（1-based），自动修正跨行选区停在下一行行首导致的 Off-by-one 问题。
+ */
+export function formatLineRange(startLineZeroBased: number, endLineZeroBased: number, endCharacter: number): string {
+  const startLine = startLineZeroBased + 1
+  let endLine = endLineZeroBased + 1
+  if (endLineZeroBased > startLineZeroBased && endCharacter === 0) {
+    endLine -= 1
+  }
+  if (endLine < startLine) {
+    endLine = startLine
+  }
+  return startLine === endLine ? `line ${startLine}` : `lines ${startLine}-${endLine}`
+}
+
+/**
+ * 轻量级 Token 粗略估算（零外部依赖）：
+ * ASCII 字符约 4 字符 ≈ 1 token，非 ASCII（如中日韩文字）约 1.5 字符 ≈ 1 token。
+ */
+export function estimateTokens(text: string): number {
+  if (!text) {
+    return 0
+  }
+  let asciiCount = 0
+  let nonAsciiCount = 0
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) <= 0x7f) {
+      asciiCount++
+    } else {
+      nonAsciiCount++
+    }
+  }
+  return Math.max(1, Math.ceil(asciiCount / 4 + nonAsciiCount / 1.5))
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+}
+
+export function formatTokenCount(tokens: number): string {
+  if (tokens >= 1000) {
+    return `~${(tokens / 1000).toFixed(1)}k tokens`
+  }
+  return `~${tokens} tokens`
+}
+
+export function formatStats(text: string): string {
+  const byteSize = Buffer.byteLength(text, 'utf8')
+  const tokens = estimateTokens(text)
+  return `${formatBytes(byteSize)}, ${formatTokenCount(tokens)}`
 }
 
 export function formatFileBlock(relativePath: string, language: string, content: string, lineRange?: string): string {

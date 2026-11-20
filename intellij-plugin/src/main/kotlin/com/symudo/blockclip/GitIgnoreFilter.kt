@@ -1,5 +1,6 @@
 package com.symudo.blockclip
 
+import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.vfs.VirtualFile
 import java.io.File
 
@@ -30,7 +31,6 @@ class GitIgnoreFilter(private val rootDir: File) {
     )
 
     init {
-        // 添加默认规则
         for (name in defaultIgnoredNames) {
             addRule(name)
         }
@@ -99,32 +99,39 @@ class GitIgnoreFilter(private val rootDir: File) {
         return sb.toString()
     }
 
-    fun isIgnored(virtualFile: VirtualFile): Boolean {
-        val fileSystemFile = File(virtualFile.path)
-        val relativePath = fileSystemFile.relativeToOrNull(rootDir)?.path?.replace('\\', '/') ?: virtualFile.name
-        val isDirectory = virtualFile.isDirectory
-
+    fun isIgnoredPath(relativePath: String, isDirectory: Boolean): Boolean {
+        val normalized = relativePath.replace('\\', '/')
+        if (!isDirectory && MarkdownFormatter.isSensitiveFile(normalized)) {
+            return true
+        }
         var ignored = false
         for (rule in patterns) {
             if (rule.isDirectoryOnly && !isDirectory) {
                 continue
             }
-            if (rule.regex.containsMatchIn(relativePath)) {
+            if (rule.regex.containsMatchIn(normalized)) {
                 ignored = !rule.isNegation
             }
         }
         return ignored
     }
 
+    fun isIgnored(virtualFile: VirtualFile): Boolean {
+        val fileSystemFile = File(virtualFile.path)
+        val relativePath = fileSystemFile.relativeToOrNull(rootDir)?.path?.replace('\\', '/') ?: virtualFile.name
+        return isIgnoredPath(relativePath, virtualFile.isDirectory)
+    }
+
     companion object {
         fun collectAllFiles(
             folder: VirtualFile,
-            projectBaseDir: File?
+            projectBaseDir: File?,
+            indicator: ProgressIndicator? = null
         ): List<VirtualFile> {
             val folderFile = File(folder.path)
             val filter = GitIgnoreFilter(folderFile)
 
-            // 1. 如果存在项目根目录，且与当前文件夹不同，先加载项目根目录的 .gitignore
+            // 1. 若存在项目根目录且与当前文件夹不同，先加载项目根目录的 .gitignore
             if (projectBaseDir != null && projectBaseDir.exists() && projectBaseDir != folderFile) {
                 val rootGitIgnore = File(projectBaseDir, ".gitignore")
                 filter.loadGitIgnore(rootGitIgnore)
@@ -135,22 +142,25 @@ class GitIgnoreFilter(private val rootDir: File) {
             filter.loadGitIgnore(localGitIgnore)
 
             val result = mutableListOf<VirtualFile>()
-            traverse(folder, filter, result)
+            traverse(folder, filter, result, indicator)
             return result
         }
 
         private fun traverse(
             dir: VirtualFile,
             filter: GitIgnoreFilter,
-            result: MutableList<VirtualFile>
+            result: MutableList<VirtualFile>,
+            indicator: ProgressIndicator?
         ) {
+            indicator?.checkCanceled()
             val children = dir.children ?: return
             for (child in children) {
+                indicator?.checkCanceled()
                 if (filter.isIgnored(child)) {
                     continue
                 }
                 if (child.isDirectory) {
-                    traverse(child, filter, result)
+                    traverse(child, filter, result, indicator)
                 } else {
                     result.add(child)
                 }
