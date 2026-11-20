@@ -6,6 +6,8 @@
 
 无论是向 AI 助手提问（如 ChatGPT、Claude、DeepSeek）、编写技术文档，还是与团队同事分享代码，都能完整保留上下文与结构。
 
+> 💡 **配套油猴脚本**：在浏览器端配合 **Google Gemini** 或 **Google AI Studio** 使用时，可配合 [userscript 油猴脚本](./userscript/README.md) 实现一键将 BlockClip 格式文本还原为代码目录树，自动打包为 ZIP 附件或单文件 Markdown 极速拖拽注入对话框！
+
 ---
 
 ## ✨ 核心特性
@@ -58,6 +60,12 @@
 4. 进入 **Plugins（插件）**，点击右上角齿轮 ⚙️ 图标；
 5. 选择 **Install Plugin from Disk...（从磁盘安装插件...）**；
 6. 选中下载的 `.zip` 压缩包并确认，即可立即启用！
+
+### 3. 油猴脚本 (Tampermonkey Userscript)
+
+用于在浏览器中配合 **Google Gemini** 或 **Google AI Studio** 自动还原文件树、打包 ZIP 与拖拽注入：
+- 脚本位置：[`userscript/blockclip-to-zip.user.js`](./userscript/blockclip-to-zip.user.js)
+- 安装指南：确保已安装 Tampermonkey 或 Violentmonkey，具体请参阅 [userscript 详细说明文档](./userscript/README.md)。
 
 ---
 
