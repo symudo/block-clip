@@ -10,18 +10,22 @@ import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.ide.CopyPasteManager
+import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.vfs.VirtualFile
 import java.awt.datatransfer.StringSelection
 
 class CopyCodeAction : AnAction(), DumbAware {
 
+    // update() 中读取 Editor.selectionModel 必须在 EDT 线程执行（仅纯内存操作，无 I/O）
     override fun getActionUpdateThread(): ActionUpdateThread {
-        return ActionUpdateThread.BGT
+        return ActionUpdateThread.EDT
     }
 
     private fun shouldCopyEditorSelection(e: AnActionEvent): Editor? {
-        // 在项目树或标签页右键时，始终复制整文件，不被编辑器遗留选区干扰
         if (e.place == ActionPlaces.PROJECT_VIEW_POPUP || e.place == ActionPlaces.EDITOR_TAB_POPUP) {
             return null
         }
@@ -62,6 +66,10 @@ class CopyCodeAction : AnAction(), DumbAware {
             val file = FileDocumentManager.getInstance().getFile(document)
             if (file != null) {
                 val formatted = MarkdownFormatter.formatSelection(file, project, selectedText, lineRange)
+                if (formatted.length > MarkdownFormatter.MAX_CONTENT_LENGTH) {
+                    notify(project, BlockClipBundle.message("notification.error.too.large"), NotificationType.WARNING)
+                    return
+                }
                 CopyPasteManager.getInstance().setContents(StringSelection(formatted))
                 val stats = MarkdownFormatter.formatStats(formatted)
                 notify(
@@ -73,49 +81,67 @@ class CopyCodeAction : AnAction(), DumbAware {
             }
         }
 
-        // 场景 B: 单文件 / 多文件复制
+        // 场景 B: 单文件 / 多文件复制（放入后台任务执行，杜绝阻塞 UI 主线程）
         val files = getTargetFiles(e).filter { !it.isDirectory }
         if (files.isEmpty()) {
-            notify(
-                project,
-                BlockClipBundle.message("notification.no.files"),
-                NotificationType.WARNING
-            )
+            notify(project, BlockClipBundle.message("notification.no.files"), NotificationType.WARNING)
             return
         }
 
-        try {
-            val result = MarkdownFormatter.processFiles(files, project)
-            CopyPasteManager.getInstance().setContents(StringSelection(result.content))
-            val stats = MarkdownFormatter.formatStats(result.content)
+        ProgressManager.getInstance().run(object : Task.Backgroundable(
+            project,
+            BlockClipBundle.message("progress.copying.files"),
+            true
+        ) {
+            override fun run(indicator: ProgressIndicator) {
+                indicator.isIndeterminate = true
+                try {
+                    indicator.checkCanceled()
+                    val result = MarkdownFormatter.processFiles(files, project)
 
-            val message = when {
-                result.stoppedEarly -> BlockClipBundle.message(
-                    "notification.copied.truncated.files",
-                    result.processedCount,
-                    stats
-                )
-                files.size > 1 -> BlockClipBundle.message(
-                    "notification.copied.multiple",
-                    files.size,
-                    stats
-                )
-                else -> BlockClipBundle.message(
-                    "notification.copied.single",
-                    files[0].name,
-                    stats
-                )
+                    if (result.processedCount == 0) {
+                        val warnMsg = if (result.stoppedEarly) {
+                            BlockClipBundle.message("notification.error.too.large")
+                        } else {
+                            BlockClipBundle.message("notification.no.files")
+                        }
+                        notify(project, warnMsg, NotificationType.WARNING)
+                        return
+                    }
+
+                    CopyPasteManager.getInstance().setContents(StringSelection(result.content))
+                    val stats = MarkdownFormatter.formatStats(result.content)
+
+                    val message = when {
+                        result.stoppedEarly -> BlockClipBundle.message(
+                            "notification.copied.truncated.files",
+                            result.processedCount,
+                            stats
+                        )
+                        result.processedCount > 1 -> BlockClipBundle.message(
+                            "notification.copied.multiple",
+                            result.processedCount,
+                            stats
+                        )
+                        else -> BlockClipBundle.message(
+                            "notification.copied.single",
+                            files[0].name,
+                            stats
+                        )
+                    }
+
+                    val type = if (result.stoppedEarly) NotificationType.WARNING else NotificationType.INFORMATION
+                    notify(project, message, type)
+                } catch (ex: Exception) {
+                    if (ex is ProcessCanceledException) throw ex
+                    notify(
+                        project,
+                        BlockClipBundle.message("notification.error.file", ex.message ?: "Unknown error"),
+                        NotificationType.ERROR
+                    )
+                }
             }
-
-            val type = if (result.stoppedEarly) NotificationType.WARNING else NotificationType.INFORMATION
-            notify(project, message, type)
-        } catch (ex: Exception) {
-            notify(
-                project,
-                BlockClipBundle.message("notification.error.file", ex.message ?: "Unknown error"),
-                NotificationType.ERROR
-            )
-        }
+        })
     }
 
     private fun getTargetFiles(e: AnActionEvent): List<VirtualFile> {

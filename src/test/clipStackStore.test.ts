@@ -110,6 +110,59 @@ describe('ClipStackStore', () => {
     assert.strictEqual(store.count(), 0)
   })
 
+  it('skips missing deleted files without emitting fake empty code blocks', async () => {
+    const store = new ClipStackStore()
+    store.addItem({
+      id: 'deleted',
+      fsPath: '/proj/deleted.ts',
+      relativePath: 'deleted.ts',
+      language: 'typescript',
+      isSnippet: false,
+      previewText: 'Whole file',
+      addedAt: 1
+    })
+    store.addItem({
+      id: 'alive',
+      fsPath: '/proj/alive.ts',
+      relativePath: 'alive.ts',
+      language: 'typescript',
+      isSnippet: false,
+      previewText: 'Whole file',
+      addedAt: 2
+    })
+
+    const res = await store.formatAll(async (item) => {
+      if (item.fsPath.includes('deleted')) {
+        return { status: 'missing' }
+      }
+      return { status: 'ok', content: 'export const ok = true;' }
+    })
+
+    assert.strictEqual(res.processedCount, 1)
+    assert.strictEqual(res.skippedMissingCount, 1)
+    assert.strictEqual(res.stoppedEarly, false)
+    assert.ok(!res.content.includes('deleted.ts'))
+    assert.ok(res.content.includes('alive.ts'))
+  })
+
+  it('handles oversized files via pre-check and never reports false success when first item exceeds limit', async () => {
+    const store = new ClipStackStore()
+    store.addItem({
+      id: 'huge',
+      fsPath: '/proj/huge.sql',
+      relativePath: 'huge.sql',
+      language: 'sql',
+      isSnippet: false,
+      previewText: 'Whole file',
+      addedAt: 1
+    })
+
+    const res = await store.formatAll(async () => ({ status: 'too_large' }), 100)
+    assert.strictEqual(res.processedCount, 0)
+    assert.strictEqual(res.stoppedEarly, true)
+    assert.strictEqual(res.content, '')
+  })
+
   it('formats mixed files and snippets and respects max length limit', async () => {
     const store = new ClipStackStore()
     store.addItem({
@@ -142,16 +195,15 @@ describe('ClipStackStore', () => {
       addedAt: 3
     })
 
-    const [content, count, stoppedEarly] = await store.formatAll(async () => 'export const a = 1;')
-    assert.strictEqual(count, 3)
-    assert.strictEqual(stoppedEarly, false)
-    assert.ok(content.includes('File: a.ts\n\n```typescript\nexport const a = 1;\n```'))
-    assert.ok(content.includes('File: a.ts (lines 10-12)\n\n```typescript\nreturn true;\n```'))
-    assert.ok(content.includes('File: logo.png\n'))
+    const res = await store.formatAll(async () => ({ status: 'ok', content: 'export const a = 1;' }))
+    assert.strictEqual(res.processedCount, 3)
+    assert.strictEqual(res.stoppedEarly, false)
+    assert.ok(res.content.includes('File: a.ts\n\n```typescript\nexport const a = 1;\n```'))
+    assert.ok(res.content.includes('File: a.ts (lines 10-12)\n\n```typescript\nreturn true;\n```'))
+    assert.ok(res.content.includes('File: logo.png\n'))
 
-    // 测试上限截断
-    const [, truncatedCount, wasStopped] = await store.formatAll(async () => 'export const a = 1;', 60)
-    assert.strictEqual(wasStopped, true)
-    assert.strictEqual(truncatedCount, 1)
+    const truncated = await store.formatAll(async () => ({ status: 'ok', content: 'export const a = 1;' }), 60)
+    assert.strictEqual(truncated.stoppedEarly, true)
+    assert.strictEqual(truncated.processedCount, 1)
   })
 })

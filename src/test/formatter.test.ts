@@ -9,7 +9,8 @@ import {
   getCodeFence,
   getLanguage,
   isBinaryFile,
-  isSensitiveFile
+  isSensitiveFile,
+  normalizePathKey
 } from '../formatter'
 
 describe('Formatter & Helpers', () => {
@@ -36,13 +37,25 @@ describe('Formatter & Helpers', () => {
     assert.strictEqual(isSensitiveFile('/proj/src/env.ts'), false)
   })
 
-  it('resolves languages properly', () => {
+  it('resolves languages properly including extensionless filenames', () => {
     assert.strictEqual(getLanguage('main.py'), 'python')
     assert.strictEqual(getLanguage('app.tsx'), 'typescriptreact')
     assert.strictEqual(getLanguage('Cargo.toml'), 'toml')
     assert.strictEqual(getLanguage('unknown.xyz'), 'xyz')
     assert.strictEqual(getLanguage('noext'), 'plaintext')
     assert.strictEqual(getLanguage('file.txt', 'typescript'), 'typescript')
+
+    // 无扩展名特殊文件名
+    assert.strictEqual(getLanguage('/proj/Dockerfile'), 'dockerfile')
+    assert.strictEqual(getLanguage('/proj/Dockerfile.prod'), 'dockerfile')
+    assert.strictEqual(getLanguage('/proj/Makefile'), 'makefile')
+    assert.strictEqual(getLanguage('/proj/CMakeLists.txt'), 'cmake')
+  })
+
+  it('normalizes path keys for cross-case comparison', () => {
+    assert.strictEqual(normalizePathKey('D:\\Repo\\Src\\App.ts', true), 'd:/repo/src/app.ts')
+    assert.strictEqual(normalizePathKey('d:/Repo/Src/App.ts', true), 'd:/repo/src/app.ts')
+    assert.strictEqual(normalizePathKey('/repo/Src/App.ts', false), '/repo/Src/App.ts')
   })
 
   it('calculates adaptive code fences correctly', () => {
@@ -54,7 +67,6 @@ describe('Formatter & Helpers', () => {
   it('formats line ranges and fixes trailing-newline off-by-one', () => {
     assert.strictEqual(formatLineRange(0, 0, 10), 'line 1')
     assert.strictEqual(formatLineRange(9, 14, 5), 'lines 10-15')
-    // 选整行拖到下一行第 0 列，不应多算一行
     assert.strictEqual(formatLineRange(9, 15, 0), 'lines 10-15')
     assert.strictEqual(formatLineRange(9, 10, 0), 'line 10')
   })
@@ -63,7 +75,6 @@ describe('Formatter & Helpers', () => {
     assert.strictEqual(estimateTokens(''), 0)
     assert.strictEqual(estimateTokens('abcd'), 1)
     assert.strictEqual(estimateTokens('a'.repeat(400)), 100)
-    // 中文字符每字约 0.67 token
     assert.ok(estimateTokens('你好世界测试代码') >= 5)
 
     assert.strictEqual(formatBytes(512), '512 B')

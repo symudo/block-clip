@@ -1,5 +1,6 @@
 import * as vscode from 'vscode'
-import { ClipStackStore, type StackEntry } from './clipStackStore'
+import { ClipStackStore, type FormatAllResult, type StackEntry } from './clipStackStore'
+import { normalizePathKey } from './formatter'
 
 export interface ClipItem extends StackEntry {
   uri: vscode.Uri
@@ -78,17 +79,26 @@ export class ClipStackManager {
     }
   }
 
-  public async formatAll(): Promise<[string, number, boolean]> {
-    return this.store.formatAll(async (item) => {
-      const openDoc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === item.uri.fsPath)
+  public async formatAll(): Promise<FormatAllResult> {
+    return this.store.formatAll(async (item, remainingBudget) => {
+      const targetKey = normalizePathKey(item.uri.fsPath)
+      const openDoc = vscode.workspace.textDocuments.find((d) => normalizePathKey(d.uri.fsPath) === targetKey)
       if (openDoc) {
-        return openDoc.getText()
+        const text = openDoc.getText()
+        if (text.length > remainingBudget) {
+          return { status: 'too_large' }
+        }
+        return { status: 'ok', content: text }
       }
       try {
+        const stat = await vscode.workspace.fs.stat(item.uri)
+        if (stat.size > remainingBudget) {
+          return { status: 'too_large' }
+        }
         const bytes = await vscode.workspace.fs.readFile(item.uri)
-        return Buffer.from(bytes).toString('utf8')
+        return { status: 'ok', content: Buffer.from(bytes).toString('utf8') }
       } catch {
-        return ''
+        return { status: 'missing' }
       }
     })
   }

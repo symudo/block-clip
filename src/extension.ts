@@ -1,3 +1,4 @@
+import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import ignore from 'ignore'
 import * as vscode from 'vscode'
@@ -9,8 +10,36 @@ import {
   getLanguage,
   isBinaryFile,
   isSensitiveFile,
-  MAX_CONTENT_LENGTH
+  MAX_CONTENT_LENGTH,
+  normalizePathKey
 } from './formatter'
+
+interface ScopedIgnore {
+  baseDir: string
+  ig: ReturnType<typeof ignore>
+}
+
+interface ProcessUrisResult {
+  content: string
+  processedCount: number
+  stoppedEarly: boolean
+  skippedMissingCount: number
+}
+
+const DEFAULT_IGNORES = [
+  '.git',
+  'node_modules',
+  'dist',
+  'build',
+  'out',
+  'coverage',
+  '.vscode',
+  '.idea',
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'bun.lockb'
+]
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -20,62 +49,95 @@ function getErrorMessage(error: unknown): string {
 }
 
 function getRelativePath(uri: vscode.Uri, workspaceFolder?: vscode.WorkspaceFolder): string {
-  return workspaceFolder
-    ? path.relative(workspaceFolder.uri.fsPath, uri.fsPath).replace(/\\/g, '/')
-    : path.basename(uri.fsPath)
+  const folder = workspaceFolder ?? vscode.workspace.getWorkspaceFolder(uri)
+  return folder ? path.relative(folder.uri.fsPath, uri.fsPath).replace(/\\/g, '/') : path.basename(uri.fsPath)
 }
 
-async function getFormattedFileString(
-  fileUri: vscode.Uri,
-  workspaceFolder: vscode.WorkspaceFolder | undefined
-): Promise<string> {
-  const relativePath = getRelativePath(fileUri, workspaceFolder)
+async function readGitIgnoreScope(dirUri: vscode.Uri, includeDefaults = false): Promise<ScopedIgnore | null> {
+  const ig = ignore()
+  let hasRules = false
 
-  if (isBinaryFile(fileUri.fsPath)) {
-    return `File: ${relativePath}\n`
+  if (includeDefaults) {
+    ig.add(DEFAULT_IGNORES)
+    hasRules = true
   }
 
-  let fileContent = ''
-  let language = 'plaintext'
+  try {
+    const gitignoreUri = vscode.Uri.joinPath(dirUri, '.gitignore')
+    const bytes = await vscode.workspace.fs.readFile(gitignoreUri)
+    ig.add(Buffer.from(bytes).toString('utf8'))
+    hasRules = true
+  } catch {
+    // 无 .gitignore 时静默处理
+  }
 
-  // 优先从已打开的内存编辑器中获取，避免读取磁盘导致未保存内容丢失
-  const openDoc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === fileUri.fsPath)
-  if (openDoc) {
-    fileContent = openDoc.getText()
-    language = getLanguage(fileUri.fsPath, openDoc.languageId)
-  } else {
-    try {
-      const fileContentBytes = await vscode.workspace.fs.readFile(fileUri)
-      fileContent = Buffer.from(fileContentBytes).toString('utf8')
-    } catch {
-      fileContent = ''
+  return hasRules ? { baseDir: dirUri.fsPath, ig } : null
+}
+
+function isIgnoredByScopes(entryFsPath: string, isDirectory: boolean, scopes: ScopedIgnore[]): boolean {
+  for (const scope of scopes) {
+    const rel = path.relative(scope.baseDir, entryFsPath).replace(/\\/g, '/')
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+      continue
     }
-    language = getLanguage(fileUri.fsPath)
+    const candidate = isDirectory ? `${rel}/` : rel
+    if (scope.ig.ignores(candidate)) {
+      return true
+    }
   }
-
-  return formatFileBlock(relativePath, language, fileContent)
+  return false
 }
 
 async function getAllFileUris(
   directoryUri: vscode.Uri,
-  rootUri: vscode.Uri,
-  ig: ReturnType<typeof ignore>
+  scopes: ScopedIgnore[],
+  visitedRealDirs: Set<string>
 ): Promise<vscode.Uri[]> {
+  try {
+    const realDir = normalizePathKey(await fs.realpath(directoryUri.fsPath))
+    if (visitedRealDirs.has(realDir)) {
+      return []
+    }
+    visitedRealDirs.add(realDir)
+  } catch {
+    // 虚拟文件系统或无法 realpath 时回退使用 fsPath 防环
+    const fallbackKey = normalizePathKey(directoryUri.fsPath)
+    if (visitedRealDirs.has(fallbackKey)) {
+      return []
+    }
+    visitedRealDirs.add(fallbackKey)
+  }
+
+  // 加载当前目录自身的 .gitignore（如果还未被加载过）
+  let activeScopes = scopes
+  const dirKey = normalizePathKey(directoryUri.fsPath)
+  if (!scopes.some((s) => normalizePathKey(s.baseDir) === dirKey)) {
+    const localScope = await readGitIgnoreScope(directoryUri, false)
+    if (localScope) {
+      activeScopes = [...scopes, localScope]
+    }
+  }
+
   const allFiles: vscode.Uri[] = []
-  const entries = await vscode.workspace.fs.readDirectory(directoryUri)
+  let entries: [string, vscode.FileType][]
+  try {
+    entries = await vscode.workspace.fs.readDirectory(directoryUri)
+  } catch {
+    return []
+  }
 
   for (const [name, type] of entries) {
     const entryUri = vscode.Uri.joinPath(directoryUri, name)
-    const relativePath = path.relative(rootUri.fsPath, entryUri.fsPath).replace(/\\/g, '/')
+    const isDir = (type & vscode.FileType.Directory) !== 0
+    const isFile = (type & vscode.FileType.File) !== 0
 
-    if (ig.ignores(relativePath)) {
+    if (isIgnoredByScopes(entryUri.fsPath, isDir, activeScopes)) {
       continue
     }
 
-    if (type === vscode.FileType.Directory) {
-      allFiles.push(...(await getAllFileUris(entryUri, rootUri, ig)))
-    } else if (type === vscode.FileType.File) {
-      // 递归扫描文件夹时自动过滤敏感文件（如 .env、密钥证书等）
+    if (isDir) {
+      allFiles.push(...(await getAllFileUris(entryUri, activeScopes, visitedRealDirs)))
+    } else if (isFile) {
       if (isSensitiveFile(entryUri.fsPath)) {
         continue
       }
@@ -90,65 +152,112 @@ async function collectFolderFileUris(
   folderUri: vscode.Uri,
   workspaceFolder: vscode.WorkspaceFolder | undefined
 ): Promise<vscode.Uri[]> {
-  const ig = ignore()
-  ig.add([
-    '.git',
-    'node_modules',
-    'dist',
-    'build',
-    'out',
-    'coverage',
-    '.vscode',
-    '.idea',
-    'package-lock.json',
-    'yarn.lock',
-    'pnpm-lock.yaml',
-    'bun.lockb'
-  ])
+  const scopes: ScopedIgnore[] = []
 
-  if (workspaceFolder && workspaceFolder.uri.fsPath !== folderUri.fsPath) {
-    try {
-      const rootGitignoreUri = vscode.Uri.joinPath(workspaceFolder.uri, '.gitignore')
-      const rootGitignoreBytes = await vscode.workspace.fs.readFile(rootGitignoreUri)
-      ig.add(Buffer.from(rootGitignoreBytes).toString('utf8'))
-    } catch {
-      // 静默处理
+  // 若存在工作区根目录，从根目录向下沿途收集 .gitignore，保证每层规则均以自身所在目录为基准路径
+  if (workspaceFolder) {
+    const rootScope = await readGitIgnoreScope(workspaceFolder.uri, true)
+    if (rootScope) {
+      scopes.push(rootScope)
+    }
+
+    // 收集工作区根与目标子目录之间可能存在的中间层 .gitignore
+    const relToRoot = path.relative(workspaceFolder.uri.fsPath, folderUri.fsPath)
+    if (relToRoot && !relToRoot.startsWith('..') && !path.isAbsolute(relToRoot)) {
+      const parts = relToRoot.split(path.sep).filter(Boolean)
+      let currentUri = workspaceFolder.uri
+      for (const part of parts) {
+        currentUri = vscode.Uri.joinPath(currentUri, part)
+        const midScope = await readGitIgnoreScope(currentUri, false)
+        if (midScope) {
+          scopes.push(midScope)
+        }
+      }
+    }
+  } else {
+    const localScope = await readGitIgnoreScope(folderUri, true)
+    if (localScope) {
+      scopes.push(localScope)
     }
   }
 
-  const gitignoreUri = vscode.Uri.joinPath(folderUri, '.gitignore')
-  try {
-    const gitignoreContentBytes = await vscode.workspace.fs.readFile(gitignoreUri)
-    ig.add(Buffer.from(gitignoreContentBytes).toString('utf8'))
-  } catch {
-    // 静默处理
-  }
-
-  return getAllFileUris(folderUri, folderUri, ig)
+  return getAllFileUris(folderUri, scopes, new Set<string>())
 }
 
-async function processUris(
-  uris: vscode.Uri[],
-  workspaceFolder: vscode.WorkspaceFolder | undefined
-): Promise<[string, number, boolean]> {
+async function getFormattedFileString(
+  fileUri: vscode.Uri,
+  remainingBudget: number
+): Promise<{ status: 'ok'; block: string } | { status: 'missing' } | { status: 'too_large' }> {
+  // 多根工作区下按每个文件独立归属计算相对路径
+  const relativePath = getRelativePath(fileUri)
+
+  if (isBinaryFile(fileUri.fsPath)) {
+    const block = `File: ${relativePath}\n`
+    return block.length > remainingBudget ? { status: 'too_large' } : { status: 'ok', block }
+  }
+
+  let fileContent: string
+  let language: string
+
+  const targetKey = normalizePathKey(fileUri.fsPath)
+  const openDoc = vscode.workspace.textDocuments.find((d) => normalizePathKey(d.uri.fsPath) === targetKey)
+  if (openDoc) {
+    fileContent = openDoc.getText()
+    if (fileContent.length > remainingBudget) {
+      return { status: 'too_large' }
+    }
+    language = getLanguage(fileUri.fsPath, openDoc.languageId)
+  } else {
+    try {
+      const stat = await vscode.workspace.fs.stat(fileUri)
+      if (stat.size > remainingBudget) {
+        return { status: 'too_large' }
+      }
+      const fileContentBytes = await vscode.workspace.fs.readFile(fileUri)
+      fileContent = Buffer.from(fileContentBytes).toString('utf8')
+    } catch {
+      return { status: 'missing' }
+    }
+    language = getLanguage(fileUri.fsPath)
+  }
+
+  const block = formatFileBlock(relativePath, language, fileContent)
+  if (block.length > remainingBudget) {
+    return { status: 'too_large' }
+  }
+  return { status: 'ok', block }
+}
+
+async function processUris(uris: vscode.Uri[]): Promise<ProcessUrisResult> {
   const allFormattedContents: string[] = []
   let currentLength = 0
   let stoppedEarly = false
+  let skippedMissingCount = 0
 
   for (const uri of uris) {
-    const formattedContent = await getFormattedFileString(uri, workspaceFolder)
+    const remaining = MAX_CONTENT_LENGTH - currentLength
+    const result = await getFormattedFileString(uri, remaining)
 
-    if (currentLength + formattedContent.length > MAX_CONTENT_LENGTH) {
+    if (result.status === 'missing') {
+      skippedMissingCount++
+      continue
+    }
+    if (result.status === 'too_large') {
       stoppedEarly = true
       break
     }
 
-    allFormattedContents.push(formattedContent)
-    currentLength += formattedContent.length
+    allFormattedContents.push(result.block)
+    currentLength += result.block.length
   }
 
   const finalContent = allFormattedContents.join('\n\n---\n\n')
-  return [finalContent, allFormattedContents.length, stoppedEarly]
+  return {
+    content: finalContent,
+    processedCount: allFormattedContents.length,
+    stoppedEarly,
+    skippedMissingCount
+  }
 }
 
 function resolveTargetUris(clickedUri?: vscode.Uri, allSelectedUris?: vscode.Uri[]): vscode.Uri[] {
@@ -162,26 +271,6 @@ function resolveTargetUris(clickedUri?: vscode.Uri, allSelectedUris?: vscode.Uri
     return [vscode.window.activeTextEditor.document.uri]
   }
   return []
-}
-
-/**
- * 判断本次触发是否面向当前活动编辑器的选中代码（防止在侧边栏或别的 Tab 右键时误抓活动编辑器选区）。
- */
-function shouldUseActiveEditorSelection(
-  editor: vscode.TextEditor | undefined,
-  clickedUri?: vscode.Uri,
-  allSelectedUris?: vscode.Uri[]
-): editor is vscode.TextEditor {
-  if (!editor || editor.selection.isEmpty) {
-    return false
-  }
-  if (allSelectedUris && allSelectedUris.length > 1) {
-    return false
-  }
-  if (clickedUri && clickedUri.fsPath !== editor.document.uri.fsPath) {
-    return false
-  }
-  return true
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -199,10 +288,14 @@ export function activate(context: vscode.ExtensionContext) {
     const selection = editor.selection
     const snippetText = doc.getText(selection)
     const lineRange = formatLineRange(selection.start.line, selection.end.line, selection.end.character)
-    const workspaceFolder = vscode.workspace.getWorkspaceFolder(doc.uri)
-    const relPath = getRelativePath(doc.uri, workspaceFolder)
+    const relPath = getRelativePath(doc.uri)
     const lang = getLanguage(doc.uri.fsPath, doc.languageId)
     const formatted = formatFileBlock(relPath, lang, snippetText, lineRange)
+
+    if (formatted.length > MAX_CONTENT_LENGTH) {
+      vscode.window.showWarningMessage(vscode.l10n.t('Selected content exceeds the 15MB size limit.'))
+      return
+    }
 
     await vscode.env.clipboard.writeText(formatted)
     const stats = formatStats(formatted)
@@ -211,19 +304,17 @@ export function activate(context: vscode.ExtensionContext) {
     )
   })
 
-  // 1. 复制单文件 / 多文件（若通过快捷键触发且当前编辑器有选区，智能复制选中片段）
+  // 1. 复制单文件 / 多文件（无参数快捷键触发且有选区时，智能复制选中片段）
   const copyCodeCommand = vscode.commands.registerCommand(
     'copy-code-with-path.copyCode',
     async (clickedUri?: vscode.Uri, allSelectedUris?: vscode.Uri[]) => {
       const editor = vscode.window.activeTextEditor
-      // 若通过快捷键/命令面板直接调用（无 clickedUri）且当前编辑器有选区，优先复制选中片段
       if (!clickedUri && (!allSelectedUris || allSelectedUris.length === 0) && editor && !editor.selection.isEmpty) {
         await vscode.commands.executeCommand('copy-code-with-path.copySelection')
         return
       }
 
       const targetUris = resolveTargetUris(clickedUri, allSelectedUris)
-
       if (targetUris.length === 0 || !targetUris[0]) {
         vscode.window.showErrorMessage(
           vscode.l10n.t('Cannot get file path. Please use from the explorer or an editor tab.')
@@ -233,9 +324,9 @@ export function activate(context: vscode.ExtensionContext) {
 
       try {
         const fileUris: vscode.Uri[] = []
-        const stats = await Promise.all(targetUris.map((uri) => vscode.workspace.fs.stat(uri)))
-        stats.forEach((stat, index) => {
-          if (stat.type === vscode.FileType.File) {
+        const statResults = await Promise.allSettled(targetUris.map((uri) => vscode.workspace.fs.stat(uri)))
+        statResults.forEach((res, index) => {
+          if (res.status === 'fulfilled' && (res.value.type & vscode.FileType.File) !== 0) {
             fileUris.push(targetUris[index])
           }
         })
@@ -245,8 +336,16 @@ export function activate(context: vscode.ExtensionContext) {
           return
         }
 
-        const workspaceFolder = vscode.workspace.getWorkspaceFolder(fileUris[0])
-        const [finalContent, processedCount, stoppedEarly] = await processUris(fileUris, workspaceFolder)
+        const { content: finalContent, processedCount, stoppedEarly } = await processUris(fileUris)
+
+        if (processedCount === 0) {
+          vscode.window.showWarningMessage(
+            stoppedEarly
+              ? vscode.l10n.t('No files copied. File size exceeds the 15MB limit.')
+              : vscode.l10n.t('No valid files found in the selection.')
+          )
+          return
+        }
 
         await vscode.env.clipboard.writeText(finalContent)
         const contentStats = formatStats(finalContent)
@@ -259,9 +358,9 @@ export function activate(context: vscode.ExtensionContext) {
               contentStats
             )
           )
-        } else if (fileUris.length > 1) {
+        } else if (processedCount > 1) {
           vscode.window.showInformationMessage(
-            vscode.l10n.t('Copied contents of {0} file(s) [{1}].', fileUris.length, contentStats)
+            vscode.l10n.t('Copied contents of {0} file(s) [{1}].', processedCount, contentStats)
           )
         } else {
           vscode.window.showInformationMessage(
@@ -299,7 +398,16 @@ export function activate(context: vscode.ExtensionContext) {
           return
         }
 
-        const [finalContent, processedCount, stoppedEarly] = await processUris(allFileUris, workspaceFolder)
+        const { content: finalContent, processedCount, stoppedEarly } = await processUris(allFileUris)
+
+        if (processedCount === 0) {
+          vscode.window.showWarningMessage(
+            stoppedEarly
+              ? vscode.l10n.t('No files copied. File size exceeds the 15MB limit.')
+              : vscode.l10n.t('The selected folder is empty or contains no copyable files.')
+          )
+          return
+        }
 
         await vscode.env.clipboard.writeText(finalContent)
         const contentStats = formatStats(finalContent)
@@ -316,7 +424,7 @@ export function activate(context: vscode.ExtensionContext) {
           )
         } else {
           vscode.window.showInformationMessage(
-            vscode.l10n.t("Copied {1} item(s) from folder '{0}' [{2}].", folderName, allFileUris.length, contentStats)
+            vscode.l10n.t("Copied {1} item(s) from folder '{0}' [{2}].", folderName, processedCount, contentStats)
           )
         }
       } catch (error) {
@@ -327,44 +435,53 @@ export function activate(context: vscode.ExtensionContext) {
     }
   )
 
-  // 3. 添加到暂存栈 (支持部分代码片段、单/多文件、以及文件夹递归入栈)
+  // 3A. 将当前编辑器选中代码片段加入暂存栈（明确操作，绝不与侧边栏/Tab 混淆）
+  const addSelectionToStackCommand = vscode.commands.registerCommand(
+    'copy-code-with-path.addSelectionToStack',
+    async () => {
+      const editor = vscode.window.activeTextEditor
+      if (!editor || editor.selection.isEmpty) {
+        vscode.window.showWarningMessage(vscode.l10n.t('No text selected in the active editor.'))
+        return
+      }
+
+      const doc = editor.document
+      const selection = editor.selection
+      const snippetText = doc.getText(selection)
+      const lineRange = formatLineRange(selection.start.line, selection.end.line, selection.end.character)
+      const relPath = getRelativePath(doc.uri)
+      const lang = getLanguage(doc.uri.fsPath, doc.languageId)
+      const preview = snippetText.trim().replace(/\s+/g, ' ').substring(0, 60)
+
+      stackManager.addItem({
+        id: `${doc.uri.fsPath}#${Date.now()}#${Math.random().toString(36).substring(2, 7)}`,
+        uri: doc.uri,
+        fsPath: doc.uri.fsPath,
+        relativePath: relPath,
+        language: lang,
+        isSnippet: true,
+        lineRange,
+        snippetContent: snippetText,
+        previewText: preview,
+        addedAt: Date.now()
+      })
+
+      vscode.window.showInformationMessage(
+        vscode.l10n.t('Added code snippet ({0}) to clip stack. Total: {1} item(s).', lineRange, stackManager.count())
+      )
+    }
+  )
+
+  // 3B. 添加文件或文件夹到暂存栈（无参数快捷键触发且有选区时，智能转调片段入栈；右键菜单明确入栈文件/文件夹）
   const addToStackCommand = vscode.commands.registerCommand(
     'copy-code-with-path.addToStack',
     async (clickedUri?: vscode.Uri, allSelectedUris?: vscode.Uri[]) => {
       const editor = vscode.window.activeTextEditor
-
-      // 场景 A: 确实是在当前活动编辑器中针对选中文本触发
-      if (shouldUseActiveEditorSelection(editor, clickedUri, allSelectedUris)) {
-        const doc = editor.document
-        const selection = editor.selection
-        const snippetText = doc.getText(selection)
-        const lineRange = formatLineRange(selection.start.line, selection.end.line, selection.end.character)
-
-        const workspaceFolder = vscode.workspace.getWorkspaceFolder(doc.uri)
-        const relPath = getRelativePath(doc.uri, workspaceFolder)
-        const lang = getLanguage(doc.uri.fsPath, doc.languageId)
-        const preview = snippetText.trim().replace(/\s+/g, ' ').substring(0, 60)
-
-        stackManager.addItem({
-          id: `${doc.uri.fsPath}#${Date.now()}#${Math.random().toString(36).substring(2, 7)}`,
-          uri: doc.uri,
-          fsPath: doc.uri.fsPath,
-          relativePath: relPath,
-          language: lang,
-          isSnippet: true,
-          lineRange,
-          snippetContent: snippetText,
-          previewText: preview,
-          addedAt: Date.now()
-        })
-
-        vscode.window.showInformationMessage(
-          vscode.l10n.t('Added code snippet ({0}) to clip stack. Total: {1} item(s).', lineRange, stackManager.count())
-        )
+      if (!clickedUri && (!allSelectedUris || allSelectedUris.length === 0) && editor && !editor.selection.isEmpty) {
+        await vscode.commands.executeCommand('copy-code-with-path.addSelectionToStack')
         return
       }
 
-      // 场景 B: 未选中文本或从侧边栏/Tab 触发整文件或文件夹入栈
       const targetUris = resolveTargetUris(clickedUri, allSelectedUris)
       if (targetUris.length === 0 || !targetUris[0]) {
         vscode.window.showErrorMessage(
@@ -373,60 +490,74 @@ export function activate(context: vscode.ExtensionContext) {
         return
       }
 
-      const fileUris: vscode.Uri[] = []
-      const stats = await Promise.all(targetUris.map((uri) => vscode.workspace.fs.stat(uri)))
-      for (let i = 0; i < stats.length; i++) {
-        const stat = stats[i]
-        const targetUri = targetUris[i]
-        if (stat.type === vscode.FileType.File) {
-          fileUris.push(targetUri)
-        } else if (stat.type === vscode.FileType.Directory) {
-          const workspaceFolder = vscode.workspace.getWorkspaceFolder(targetUri)
-          const folderFiles = await collectFolderFileUris(targetUri, workspaceFolder)
-          fileUris.push(...folderFiles)
+      try {
+        const fileUris: vscode.Uri[] = []
+        const statResults = await Promise.allSettled(targetUris.map((uri) => vscode.workspace.fs.stat(uri)))
+        for (let i = 0; i < statResults.length; i++) {
+          const res = statResults[i]
+          if (res.status !== 'fulfilled') {
+            continue
+          }
+          const stat = res.value
+          const targetUri = targetUris[i]
+          if ((stat.type & vscode.FileType.File) !== 0) {
+            fileUris.push(targetUri)
+          } else if ((stat.type & vscode.FileType.Directory) !== 0) {
+            const workspaceFolder = vscode.workspace.getWorkspaceFolder(targetUri)
+            const folderFiles = await collectFolderFileUris(targetUri, workspaceFolder)
+            fileUris.push(...folderFiles)
+          }
         }
+
+        if (fileUris.length === 0) {
+          vscode.window.showWarningMessage(vscode.l10n.t('No valid files found in the selection.'))
+          return
+        }
+
+        for (const uri of fileUris) {
+          const relPath = getRelativePath(uri)
+          const targetKey = normalizePathKey(uri.fsPath)
+          const openDoc = vscode.workspace.textDocuments.find((d) => normalizePathKey(d.uri.fsPath) === targetKey)
+          const lang = getLanguage(uri.fsPath, openDoc?.languageId)
+
+          stackManager.addItem({
+            id: normalizePathKey(uri.fsPath),
+            uri,
+            fsPath: uri.fsPath,
+            relativePath: relPath,
+            language: lang,
+            isSnippet: false,
+            previewText: vscode.l10n.t('Whole file content'),
+            addedAt: Date.now()
+          })
+        }
+
+        vscode.window.showInformationMessage(
+          vscode.l10n.t('Added {0} file(s) to clip stack. Total: {1} item(s).', fileUris.length, stackManager.count())
+        )
+      } catch (error) {
+        console.error(error)
+        const message = getErrorMessage(error)
+        vscode.window.showErrorMessage(vscode.l10n.t('Failed to add to clip stack: {0}', message))
       }
-
-      if (fileUris.length === 0) {
-        vscode.window.showWarningMessage(vscode.l10n.t('No valid files found in the selection.'))
-        return
-      }
-
-      for (const uri of fileUris) {
-        const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri)
-        const relPath = getRelativePath(uri, workspaceFolder)
-        const openDoc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === uri.fsPath)
-        const lang = getLanguage(uri.fsPath, openDoc?.languageId)
-
-        stackManager.addItem({
-          id: uri.fsPath,
-          uri,
-          fsPath: uri.fsPath,
-          relativePath: relPath,
-          language: lang,
-          isSnippet: false,
-          previewText: vscode.l10n.t('Whole file content'),
-          addedAt: Date.now()
-        })
-      }
-
-      vscode.window.showInformationMessage(
-        vscode.l10n.t('Added {0} file(s) to clip stack. Total: {1} item(s).', fileUris.length, stackManager.count())
-      )
     }
   )
 
   // 4. 从暂存栈移除当前文件相关的所有条目
   const removeFromStackCommand = vscode.commands.registerCommand(
     'copy-code-with-path.removeFromStack',
-    async (clickedUri?: vscode.Uri) => {
-      const targetUris = resolveTargetUris(clickedUri)
+    async (clickedUri?: vscode.Uri, allSelectedUris?: vscode.Uri[]) => {
+      const targetUris = resolveTargetUris(clickedUri, allSelectedUris)
       if (targetUris.length === 0 || !targetUris[0]) {
         vscode.window.showErrorMessage(vscode.l10n.t('Cannot get file path.'))
         return
       }
 
-      const removedCount = stackManager.removeByUri(targetUris[0])
+      let removedCount = 0
+      for (const uri of targetUris) {
+        removedCount += stackManager.removeByUri(uri)
+      }
+
       if (removedCount > 0) {
         vscode.window.showInformationMessage(
           vscode.l10n.t(
@@ -462,7 +593,17 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     try {
-      const [finalContent, processedCount, stoppedEarly] = await stackManager.formatAll()
+      const { content: finalContent, processedCount, stoppedEarly } = await stackManager.formatAll()
+
+      if (processedCount === 0) {
+        vscode.window.showWarningMessage(
+          stoppedEarly
+            ? vscode.l10n.t('No items copied from clip stack. Content exceeds the 15MB limit.')
+            : vscode.l10n.t('No readable files remain in the clip stack.')
+        )
+        return
+      }
+
       await vscode.env.clipboard.writeText(finalContent)
       const contentStats = formatStats(finalContent)
       const clearBtn = vscode.l10n.t('Clear Stack')
@@ -589,7 +730,7 @@ export function activate(context: vscode.ExtensionContext) {
               }
             }
           } catch {
-            // 静默处理
+            vscode.window.showWarningMessage(vscode.l10n.t('File no longer exists: {0}', item.relativePath))
           }
         }
       }
@@ -602,6 +743,7 @@ export function activate(context: vscode.ExtensionContext) {
     copySelectionCommand,
     copyCodeCommand,
     copyFolderCodeCommand,
+    addSelectionToStackCommand,
     addToStackCommand,
     removeFromStackCommand,
     popFromStackCommand,

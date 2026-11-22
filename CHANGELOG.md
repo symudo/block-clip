@@ -3,6 +3,28 @@
 所有对本项目的显著更改都将记录在此文件中。
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/) 规范。
 
+## [0.4.1] - 2026-11-22
+
+### 🐛 全面稳定性与隐性 Bug 修复 (Bug Fixes)
+- **【JetBrains】修复暂存栈管理弹窗无法展开二级“跳转 / 删除”子菜单**：
+  - 补全 `BaseListPopupStep.hasSubstep` 覆写，移除过期的 `AnActionEvent` 复用，并增加失效文件（`isValid`）校验防止删除文件后跳转崩溃。
+- **【JetBrains】修复线程模型违规与主线程阻塞**：
+  - 修正 `CopyCodeAction` / `AddToStackAction` 在 BGT 线程访问 `Editor.selectionModel` 的问题（改为纯内存 EDT 更新）。
+  - 将 `CopyCodeAction` 与 `CopyStackAction` 的磁盘读取迁入后台进度任务（`Task.Backgroundable`），大批量复制不再阻塞 UI。
+  - 修复 `RemoveFromStackAction` 编辑器回退获取文件与多选移除支持，并统一数值格式化使用 `Locale.US` 避免地区小数点差异。
+- **【VS Code】修复软链接（Symlink）文件漏扫与异常防护**：
+  - 所有 `FileType` 判断改为位掩码匹配，支持 pnpm / Monorepo 中的软链接文件，并增加 `realpath` 防循环软链保护；为 `addToStack` 补齐 `try/catch` 与 `Promise.allSettled` 容错。
+  - 拆分独立的“加入选中代码到暂存栈”菜单项（仅在编辑器有选区时显示），彻底消除在侧边栏/Tab 右键活动文件时误抓选区的歧义。
+  - 修复多根工作区（Multi-root Workspace）多选文件时的跨根路径计算问题，以及 Windows 盘符大小写差异导致的去重/脏文档匹配问题。
+- **【双端】修复多层级 `.gitignore` 规则基准错位与正则缺陷**：
+  - 每层 `.gitignore`（根目录、中间目录、递归子目录）均严格以其所在目录为基准路径匹配，彻底修复根目录带路径前缀规则在子目录失效的问题；补齐 JetBrains 正则 `[`、`]`、`\` 转义与目录子路径匹配。
+- **【双端】修复超大单文件与已删除文件边缘场景**：
+  - 读取文件前先预检物理体积（`stat.size` / `file.length`），避免 200MB 大文件被整份读入内存；若无可复制内容（`processedCount == 0`），绝不覆盖清空用户剪贴板。
+  - 暂存栈中已被删除的文件会自动跳过，不再输出虚假的空代码块。
+  - 修复 `Dockerfile`、`Dockerfile.*`、`Makefile`、`CMakeLists.txt` 等无后缀文件的 Markdown 语言识别。
+
+---
+
 ## [0.4.0] - 2026-11-21
 
 ### ✨ 体验升级 (Features & Enhancements)

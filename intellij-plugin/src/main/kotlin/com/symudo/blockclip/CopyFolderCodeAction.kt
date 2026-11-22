@@ -7,6 +7,7 @@ import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.ide.CopyPasteManager
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
@@ -64,6 +65,17 @@ class CopyFolderCodeAction : AnAction(), DumbAware {
 
                     indicator.checkCanceled()
                     val result = MarkdownFormatter.processFiles(files, project)
+
+                    if (result.processedCount == 0) {
+                        val warnMsg = if (result.stoppedEarly) {
+                            BlockClipBundle.message("notification.error.too.large")
+                        } else {
+                            BlockClipBundle.message("notification.empty.folder")
+                        }
+                        notify(project, warnMsg, NotificationType.WARNING)
+                        return
+                    }
+
                     CopyPasteManager.getInstance().setContents(StringSelection(result.content))
                     val stats = MarkdownFormatter.formatStats(result.content)
 
@@ -78,7 +90,7 @@ class CopyFolderCodeAction : AnAction(), DumbAware {
                         BlockClipBundle.message(
                             "notification.copied.folder",
                             folderName,
-                            files.size,
+                            result.processedCount,
                             stats
                         )
                     }
@@ -86,7 +98,7 @@ class CopyFolderCodeAction : AnAction(), DumbAware {
                     val type = if (result.stoppedEarly) NotificationType.WARNING else NotificationType.INFORMATION
                     notify(project, message, type)
                 } catch (ex: Exception) {
-                    if (ex is com.intellij.openapi.progress.ProcessCanceledException) {
+                    if (ex is ProcessCanceledException) {
                         throw ex
                     }
                     notify(

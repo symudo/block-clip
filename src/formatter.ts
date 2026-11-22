@@ -56,6 +56,18 @@ const sensitiveExactNames = new Set(['id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519
 
 const safeEnvSuffixes = ['.example', '.sample', '.template', '.dist']
 
+const fileNameToLanguageMap: Record<string, string> = {
+  dockerfile: 'dockerfile',
+  makefile: 'makefile',
+  gnumakefile: 'makefile',
+  'cmakelists.txt': 'cmake',
+  gemfile: 'ruby',
+  rakefile: 'ruby',
+  vagrantfile: 'ruby',
+  jenkinsfile: 'groovy',
+  justfile: 'just'
+}
+
 export const extensionToLanguageMap: Record<string, string> = {
   js: 'javascript',
   mjs: 'javascript',
@@ -99,6 +111,14 @@ export const extensionToLanguageMap: Record<string, string> = {
   dockerfile: 'dockerfile'
 }
 
+/**
+ * 归一化路径用于相等性比较（在 Windows 上兼容盘符及大小写差异）。
+ */
+export function normalizePathKey(filePath: string, isCaseInsensitive: boolean = process.platform === 'win32'): string {
+  const normalized = filePath.replace(/\\/g, '/')
+  return isCaseInsensitive ? normalized.toLowerCase() : normalized
+}
+
 export function isBinaryFile(filePath: string): boolean {
   const extension = path.extname(filePath).substring(1).toLowerCase()
   return binaryFileExtensions.has(extension)
@@ -127,7 +147,16 @@ export function getLanguage(filePath: string, knownLanguageId?: string): string 
   if (knownLanguageId && knownLanguageId !== 'plaintext') {
     return knownLanguageId
   }
-  const extension = path.extname(filePath).substring(1).toLowerCase()
+
+  const baseName = path.basename(filePath).toLowerCase()
+  if (fileNameToLanguageMap[baseName]) {
+    return fileNameToLanguageMap[baseName]
+  }
+  if (baseName.startsWith('dockerfile.')) {
+    return 'dockerfile'
+  }
+
+  const extension = path.extname(baseName).substring(1)
   if (extension) {
     return extensionToLanguageMap[extension] || extension
   }
@@ -165,7 +194,7 @@ export function formatLineRange(startLineZeroBased: number, endLineZeroBased: nu
 
 /**
  * 轻量级 Token 粗略估算（零外部依赖）：
- * ASCII 字符约 4 字符 ≈ 1 token，非 ASCII（如中日韩文字）约 1.5 字符 ≈ 1 token。
+ * ASCII 约 4 字符 ≈ 1 token，非 ASCII（如中日韩文字）约 1.5 字符 ≈ 1 token。
  */
 export function estimateTokens(text: string): number {
   if (!text) {

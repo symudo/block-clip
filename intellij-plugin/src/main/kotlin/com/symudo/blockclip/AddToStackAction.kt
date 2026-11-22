@@ -19,7 +19,8 @@ import java.io.File
 
 class AddToStackAction : AnAction(), DumbAware {
 
-    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
+    // update() 中读取 Editor.selectionModel 必须在 EDT 线程执行（仅纯内存操作，无 I/O）
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
 
     private fun shouldUseEditorSelection(e: AnActionEvent): Editor? {
         if (e.place == ActionPlaces.PROJECT_VIEW_POPUP || e.place == ActionPlaces.EDITOR_TAB_POPUP) {

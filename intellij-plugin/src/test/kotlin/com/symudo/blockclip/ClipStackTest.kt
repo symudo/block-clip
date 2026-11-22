@@ -10,20 +10,31 @@ import java.io.OutputStream
 
 class ClipStackTest {
 
-    private class DummyVirtualFile(private val fileName: String, private val rawContent: String = "") : VirtualFile() {
+    private class DummyVirtualFile(
+        private val fileName: String,
+        private val rawContent: String = "",
+        private val valid: Boolean = true,
+        private val fakeLength: Long? = null,
+        private val failOnRead: Boolean = false
+    ) : VirtualFile() {
         override fun getName(): String = fileName
         override fun getFileSystem() = throw UnsupportedOperationException()
         override fun getPath(): String = "/project/$fileName"
         override fun isWritable(): Boolean = false
         override fun isDirectory(): Boolean = false
-        override fun isValid(): Boolean = true
+        override fun isValid(): Boolean = valid
         override fun getParent(): VirtualFile? = null
         override fun getChildren(): Array<VirtualFile> = emptyArray()
         override fun getOutputStream(requestor: Any?, newModificationStamp: Long, newTimeStamp: Long): OutputStream =
             throw UnsupportedOperationException()
-        override fun contentsToByteArray(): ByteArray = rawContent.toByteArray(Charsets.UTF_8)
+        override fun contentsToByteArray(): ByteArray {
+            if (failOnRead) {
+                throw AssertionError("Should not read oversized file into memory!")
+            }
+            return rawContent.toByteArray(Charsets.UTF_8)
+        }
         override fun getTimeStamp(): Long = 0
-        override fun getLength(): Long = rawContent.length.toLong()
+        override fun getLength(): Long = fakeLength ?: rawContent.length.toLong()
         override fun refresh(asynchronous: Boolean, recursive: Boolean, postRunnable: Runnable?) {}
         override fun getInputStream(): InputStream = throw UnsupportedOperationException()
         override fun getExtension(): String = fileName.substringAfterLast('.', "")
@@ -76,6 +87,30 @@ class ClipStackTest {
     }
 
     @Test
+    fun testSkipsInvalidDeletedFilesAndPreChecksOversizedFiles() {
+        val deletedFile = DummyVirtualFile("deleted.ts", valid = false)
+        val aliveFile = DummyVirtualFile("alive.ts", rawContent = "export const ok = 1;")
+        val res = MarkdownFormatter.processClipItems(
+            listOf(
+                ClipItem(file = deletedFile, relativePath = "deleted.ts", language = "typescript", isSnippet = false),
+                ClipItem(file = aliveFile, relativePath = "alive.ts", language = "typescript", isSnippet = false)
+            ),
+            null
+        )
+        assertEquals(1, res.processedCount)
+        assertEquals(1, res.skippedMissingCount)
+        assertFalse(res.content.contains("deleted.ts"))
+        assertTrue(res.content.contains("alive.ts"))
+
+        // 验证超大文件在预检阶段即中止，不会触发 contentsToByteArray() 读取到内存
+        val hugeFile = DummyVirtualFile("huge.sql", fakeLength = 50L * 1024 * 1024, failOnRead = true)
+        val hugeRes = MarkdownFormatter.processFiles(listOf(hugeFile), null)
+        assertEquals(0, hugeRes.processedCount)
+        assertTrue(hugeRes.stoppedEarly)
+        assertEquals("", hugeRes.content)
+    }
+
+    @Test
     fun testProcessClipItemsAndMaxLengthTruncation() {
         val mockFile = DummyVirtualFile("A.ts", "export const a = 1;")
         val item1 = ClipItem(
@@ -99,7 +134,6 @@ class ClipStackTest {
         assertTrue(fullResult.content.contains("export const a = 1;"))
         assertTrue(fullResult.content.contains("File: src/A.ts (line 5)"))
 
-        // 限制长度触发提前截断
         val truncated = MarkdownFormatter.processClipItems(listOf(item1, item2), null, maxLength = 70)
         assertEquals(1, truncated.processedCount)
         assertTrue(truncated.stoppedEarly)

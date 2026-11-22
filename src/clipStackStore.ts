@@ -1,4 +1,4 @@
-import { formatFileBlock, isBinaryFile, MAX_CONTENT_LENGTH } from './formatter'
+import { formatFileBlock, isBinaryFile, MAX_CONTENT_LENGTH, normalizePathKey } from './formatter'
 
 export interface StackEntry {
   id: string
@@ -12,12 +12,22 @@ export interface StackEntry {
   addedAt: number
 }
 
+export type FileReadResult = { status: 'ok'; content: string } | { status: 'missing' } | { status: 'too_large' }
+
+export interface FormatAllResult {
+  content: string
+  processedCount: number
+  stoppedEarly: boolean
+  skippedMissingCount: number
+}
+
 export class ClipStackStore<T extends StackEntry = StackEntry> {
   private items: T[] = []
 
   public addItem(item: T): void {
     if (!item.isSnippet) {
-      const existingIdx = this.items.findIndex((i) => !i.isSnippet && i.fsPath === item.fsPath)
+      const targetKey = normalizePathKey(item.fsPath)
+      const existingIdx = this.items.findIndex((i) => !i.isSnippet && normalizePathKey(i.fsPath) === targetKey)
       if (existingIdx !== -1) {
         this.items[existingIdx] = item
         return
@@ -37,8 +47,9 @@ export class ClipStackStore<T extends StackEntry = StackEntry> {
   }
 
   public removeByPath(fsPath: string): number {
+    const targetKey = normalizePathKey(fsPath)
     const prevLength = this.items.length
-    this.items = this.items.filter((i) => i.fsPath !== fsPath)
+    this.items = this.items.filter((i) => normalizePathKey(i.fsPath) !== targetKey)
     return prevLength - this.items.length
   }
 
@@ -55,20 +66,32 @@ export class ClipStackStore<T extends StackEntry = StackEntry> {
   }
 
   public async formatAll(
-    readFileContent: (item: T) => Promise<string>,
+    readFileContent: (item: T, remainingBudget: number) => Promise<FileReadResult>,
     maxLength: number = MAX_CONTENT_LENGTH
-  ): Promise<[string, number, boolean]> {
+  ): Promise<FormatAllResult> {
     const formattedBlocks: string[] = []
     let currentLength = 0
     let stoppedEarly = false
+    let skippedMissingCount = 0
 
     for (const item of this.items) {
       let block: string
       if (!item.isSnippet && isBinaryFile(item.fsPath)) {
         block = `File: ${item.relativePath}\n`
+      } else if (item.isSnippet) {
+        block = formatFileBlock(item.relativePath, item.language, item.snippetContent ?? '', item.lineRange)
       } else {
-        const content = item.isSnippet ? (item.snippetContent ?? '') : await readFileContent(item)
-        block = formatFileBlock(item.relativePath, item.language, content, item.lineRange)
+        const remaining = maxLength - currentLength
+        const readResult = await readFileContent(item, remaining)
+        if (readResult.status === 'missing') {
+          skippedMissingCount++
+          continue
+        }
+        if (readResult.status === 'too_large') {
+          stoppedEarly = true
+          break
+        }
+        block = formatFileBlock(item.relativePath, item.language, readResult.content, item.lineRange)
       }
 
       if (currentLength + block.length > maxLength) {
@@ -81,6 +104,11 @@ export class ClipStackStore<T extends StackEntry = StackEntry> {
     }
 
     const finalContent = formattedBlocks.join('\n\n---\n\n')
-    return [finalContent, formattedBlocks.length, stoppedEarly]
+    return {
+      content: finalContent,
+      processedCount: formattedBlocks.length,
+      stoppedEarly,
+      skippedMissingCount
+    }
   }
 }

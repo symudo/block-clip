@@ -2,7 +2,7 @@
   "name": "block-clip",
   "displayName": "blockClip",
   "description": "%extension.description%",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "yuchuan",
   "l10n": "./l10n",
   "license": "MIT",
@@ -31,6 +31,10 @@
       {
         "command": "copy-code-with-path.copyFolderCode",
         "title": "%command.copyFolderCode%"
+      },
+      {
+        "command": "copy-code-with-path.addSelectionToStack",
+        "title": "%command.addSelectionToStack%"
       },
       {
         "command": "copy-code-with-path.addToStack",
@@ -81,6 +85,11 @@
     ],
     "menus": {
       "copy-code-with-path.stackSubmenu": [
+        {
+          "command": "copy-code-with-path.addSelectionToStack",
+          "when": "editorTextFocus && editorHasSelection",
+          "group": "1_action@0"
+        },
         {
           "command": "copy-code-with-path.addToStack",
           "group": "1_action@1"

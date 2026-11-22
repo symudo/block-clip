@@ -6,11 +6,14 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import java.io.File
+import java.util.Locale
 import kotlin.math.ceil
 import kotlin.math.max
 
 object MarkdownFormatter {
     const val MAX_CONTENT_LENGTH = 15 * 1024 * 1024 // 15MB
+
+    private val isWindows = System.getProperty("os.name").lowercase(Locale.ROOT).contains("win")
 
     private val binaryExtensions = setOf(
         "png", "jpg", "jpeg", "gif", "webp", "ico", "bmp", "svg",
@@ -32,6 +35,18 @@ object MarkdownFormatter {
     )
 
     private val safeEnvSuffixes = listOf(".example", ".sample", ".template", ".dist")
+
+    private val fileNameToLanguageMap = mapOf(
+        "dockerfile" to "dockerfile",
+        "makefile" to "makefile",
+        "gnumakefile" to "makefile",
+        "cmakelists.txt" to "cmake",
+        "gemfile" to "ruby",
+        "rakefile" to "ruby",
+        "vagrantfile" to "ruby",
+        "jenkinsfile" to "groovy",
+        "justfile" to "just"
+    )
 
     private val extensionToLanguageMap = mapOf(
         "js" to "javascript",
@@ -76,8 +91,13 @@ object MarkdownFormatter {
         "dockerfile" to "dockerfile"
     )
 
+    fun normalizePathKey(path: String, caseInsensitive: Boolean = isWindows): String {
+        val normalized = path.replace('\\', '/')
+        return if (caseInsensitive) normalized.lowercase(Locale.ROOT) else normalized
+    }
+
     fun isBinaryFile(file: VirtualFile): Boolean {
-        val extension = file.extension?.lowercase() ?: return false
+        val extension = file.extension?.lowercase(Locale.ROOT) ?: return false
         return binaryExtensions.contains(extension)
     }
 
@@ -86,7 +106,7 @@ object MarkdownFormatter {
      * 保留 .env.example / .env.sample / .env.template / .env.dist 模板文件。
      */
     fun isSensitiveFile(fileName: String): Boolean {
-        val lower = File(fileName).name.lowercase()
+        val lower = File(fileName).name.lowercase(Locale.ROOT)
         if (sensitiveExactNames.contains(lower)) {
             return true
         }
@@ -97,9 +117,22 @@ object MarkdownFormatter {
         return sensitiveExtensions.contains(ext)
     }
 
+    fun getLanguageByName(fileName: String): String {
+        val lower = File(fileName).name.lowercase(Locale.ROOT)
+        fileNameToLanguageMap[lower]?.let { return it }
+        if (lower.startsWith("dockerfile.")) {
+            return "dockerfile"
+        }
+        val dotIndex = lower.lastIndexOf('.')
+        if (dotIndex > 0 && dotIndex < lower.length - 1) {
+            val ext = lower.substring(dotIndex + 1)
+            return extensionToLanguageMap[ext] ?: ext
+        }
+        return "plaintext"
+    }
+
     fun getLanguage(file: VirtualFile): String {
-        val extension = file.extension?.lowercase() ?: ""
-        return extensionToLanguageMap[extension] ?: if (extension.isNotEmpty()) extension else "plaintext"
+        return getLanguageByName(file.name)
     }
 
     fun getCodeFence(content: String): String {
@@ -160,14 +193,14 @@ object MarkdownFormatter {
     fun formatBytes(bytes: Long): String {
         return when {
             bytes < 1024L -> "$bytes B"
-            bytes < 1024L * 1024L -> String.format("%.1f KB", bytes / 1024.0)
-            else -> String.format("%.2f MB", bytes / (1024.0 * 1024.0))
+            bytes < 1024L * 1024L -> String.format(Locale.US, "%.1f KB", bytes / 1024.0)
+            else -> String.format(Locale.US, "%.2f MB", bytes / (1024.0 * 1024.0))
         }
     }
 
     fun formatTokenCount(tokens: Int): String {
         return if (tokens >= 1000) {
-            String.format("~%.1fk tokens", tokens / 1000.0)
+            String.format(Locale.US, "~%.1fk tokens", tokens / 1000.0)
         } else {
             "~$tokens tokens"
         }
@@ -180,35 +213,57 @@ object MarkdownFormatter {
     }
 
     fun getRelativePath(file: VirtualFile, project: Project?): String {
-        val projectBaseDir = project?.basePath?.let { File(it) }
-        if (projectBaseDir != null) {
-            val fileSystemFile = File(file.path)
-            try {
-                val rel = fileSystemFile.relativeToOrNull(projectBaseDir)?.path?.replace('\\', '/')
-                if (!rel.isNullOrEmpty()) {
-                    return rel
-                }
-            } catch (_: Exception) {
+        val basePath = project?.basePath
+        if (basePath != null) {
+            val baseNorm = normalizePathKey(basePath).trimEnd('/')
+            val fileNorm = normalizePathKey(file.path)
+            if (fileNorm.startsWith("$baseNorm/")) {
+                return file.path.replace('\\', '/').substring(baseNorm.length + 1)
             }
         }
         return file.name
     }
 
-    private fun readFileContentSafely(file: VirtualFile): String? {
+    sealed class FileReadResult {
+        data class Ok(val content: String) : FileReadResult()
+        object Missing : FileReadResult()
+        object TooLarge : FileReadResult()
+    }
+
+    private fun readFileContentSafely(file: VirtualFile, remainingBudget: Int): FileReadResult {
+        if (!file.isValid) {
+            return FileReadResult.Missing
+        }
+
         // 优先在 ReadAction 中读取已打开的 Document 内存缓存，实现“未保存脏数据优先”且线程安全
         val app = ApplicationManager.getApplication()
         if (app != null) {
             val docText = ReadAction.compute<String?, Throwable> {
-                FileDocumentManager.getInstance().getDocument(file)?.text
+                if (!file.isValid) null else FileDocumentManager.getInstance().getDocument(file)?.text
             }
             if (docText != null) {
-                return docText
+                return if (docText.length > remainingBudget) {
+                    FileReadResult.TooLarge
+                } else {
+                    FileReadResult.Ok(docText)
+                }
             }
         }
+
+        // 读取磁盘前先预检物理大小，避免将超大文件整份读入内存
+        if (file.length > remainingBudget.toLong()) {
+            return FileReadResult.TooLarge
+        }
+
         return try {
-            String(file.contentsToByteArray(), Charsets.UTF_8)
+            val text = String(file.contentsToByteArray(), Charsets.UTF_8)
+            if (text.length > remainingBudget) {
+                FileReadResult.TooLarge
+            } else {
+                FileReadResult.Ok(text)
+            }
         } catch (_: Exception) {
-            null
+            FileReadResult.Missing
         }
     }
 
@@ -224,42 +279,56 @@ object MarkdownFormatter {
         return "File: $relativePath ($lineRange)\n\n$fence$language\n$selectedText\n$fence\n"
     }
 
-    fun getFormattedFileString(file: VirtualFile, project: Project?): String {
-        val relativePath = getRelativePath(file, project)
-
-        if (isBinaryFile(file)) {
-            return "File: $relativePath\n"
-        }
-
-        val fileContent = readFileContentSafely(file) ?: return "File: $relativePath\n"
-        val language = getLanguage(file)
-        val fence = getCodeFence(fileContent)
-        return "File: $relativePath\n\n$fence$language\n$fileContent\n$fence\n"
-    }
-
     data class ProcessResult(
         val content: String,
         val processedCount: Int,
-        val stoppedEarly: Boolean
+        val stoppedEarly: Boolean,
+        val skippedMissingCount: Int = 0
     )
 
-    fun processFiles(files: List<VirtualFile>, project: Project?): ProcessResult {
+    fun processFiles(
+        files: List<VirtualFile>,
+        project: Project?,
+        maxLength: Int = MAX_CONTENT_LENGTH
+    ): ProcessResult {
         val formattedContents = mutableListOf<String>()
         var currentLength = 0
         var stoppedEarly = false
+        var skippedMissing = 0
 
         for (file in files) {
-            val formatted = getFormattedFileString(file, project)
-            if (currentLength + formatted.length > MAX_CONTENT_LENGTH) {
+            val remaining = maxLength - currentLength
+            val relativePath = getRelativePath(file, project)
+            val block = if (isBinaryFile(file)) {
+                "File: $relativePath\n"
+            } else {
+                when (val read = readFileContentSafely(file, remaining)) {
+                    is FileReadResult.Missing -> {
+                        skippedMissing++
+                        continue
+                    }
+                    is FileReadResult.TooLarge -> {
+                        stoppedEarly = true
+                        break
+                    }
+                    is FileReadResult.Ok -> {
+                        val language = getLanguage(file)
+                        val fence = getCodeFence(read.content)
+                        "File: $relativePath\n\n$fence$language\n${read.content}\n$fence\n"
+                    }
+                }
+            }
+
+            if (currentLength + block.length > maxLength) {
                 stoppedEarly = true
                 break
             }
-            formattedContents.add(formatted)
-            currentLength += formatted.length
+            formattedContents.add(block)
+            currentLength += block.length
         }
 
         val finalContent = formattedContents.joinToString("\n\n---\n\n")
-        return ProcessResult(finalContent, formattedContents.size, stoppedEarly)
+        return ProcessResult(finalContent, formattedContents.size, stoppedEarly, skippedMissing)
     }
 
     fun formatClipItem(item: ClipItem, project: Project?): String {
@@ -271,7 +340,10 @@ object MarkdownFormatter {
         val fileContent = if (item.isSnippet) {
             item.snippetContent ?: ""
         } else {
-            readFileContentSafely(item.file) ?: ""
+            when (val read = readFileContentSafely(item.file, MAX_CONTENT_LENGTH)) {
+                is FileReadResult.Ok -> read.content
+                else -> ""
+            }
         }
 
         val language = item.language
@@ -292,18 +364,44 @@ object MarkdownFormatter {
         val formattedContents = mutableListOf<String>()
         var currentLength = 0
         var stoppedEarly = false
+        var skippedMissing = 0
 
         for (item in items) {
-            val formatted = formatClipItem(item, project)
-            if (currentLength + formatted.length > maxLength) {
+            val remaining = maxLength - currentLength
+            val relativePath = item.relativePath.ifEmpty { getRelativePath(item.file, project) }
+            val block = if (!item.isSnippet && isBinaryFile(item.file)) {
+                "File: $relativePath\n"
+            } else if (item.isSnippet) {
+                val content = item.snippetContent ?: ""
+                val fence = getCodeFence(content)
+                val header = if (item.lineRange != null) "File: $relativePath (${item.lineRange})" else "File: $relativePath"
+                "$header\n\n$fence${item.language}\n$content\n$fence\n"
+            } else {
+                when (val read = readFileContentSafely(item.file, remaining)) {
+                    is FileReadResult.Missing -> {
+                        skippedMissing++
+                        continue
+                    }
+                    is FileReadResult.TooLarge -> {
+                        stoppedEarly = true
+                        break
+                    }
+                    is FileReadResult.Ok -> {
+                        val fence = getCodeFence(read.content)
+                        "File: $relativePath\n\n$fence${item.language}\n${read.content}\n$fence\n"
+                    }
+                }
+            }
+
+            if (currentLength + block.length > maxLength) {
                 stoppedEarly = true
                 break
             }
-            formattedContents.add(formatted)
-            currentLength += formatted.length
+            formattedContents.add(block)
+            currentLength += block.length
         }
 
         val finalContent = formattedContents.joinToString("\n\n---\n\n")
-        return ProcessResult(finalContent, formattedContents.size, stoppedEarly)
+        return ProcessResult(finalContent, formattedContents.size, stoppedEarly, skippedMissing)
     }
 }

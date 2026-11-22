@@ -18,7 +18,6 @@ class GitIgnoreFilterTest {
         assertTrue(filter.isIgnoredPath(".idea", true))
         assertTrue(filter.isIgnoredPath("pnpm-lock.yaml", false))
 
-        // 敏感文件默认保护，但保留示例模板
         assertTrue(filter.isIgnoredPath(".env", false))
         assertTrue(filter.isIgnoredPath(".env.production", false))
         assertTrue(filter.isIgnoredPath("certs/private.key", false))
@@ -27,7 +26,7 @@ class GitIgnoreFilterTest {
     }
 
     @Test
-    fun testCustomGitIgnoreFile(@TempDir tempDir: File) {
+    fun testCustomGitIgnoreRulesWithBracketsAndPathAnchoring(@TempDir tempDir: File) {
         val gitignoreFile = File(tempDir, ".gitignore")
         gitignoreFile.writeText(
             """
@@ -35,6 +34,8 @@ class GitIgnoreFilterTest {
             *.log
             temp/
             !important.log
+            src/generated/
+            cache[1].dat
             """.trimIndent()
         )
 
@@ -44,7 +45,19 @@ class GitIgnoreFilterTest {
         assertTrue(filter.isIgnoredPath("debug.log", false))
         assertTrue(filter.isIgnoredPath("logs/error.log", false))
         assertFalse(filter.isIgnoredPath("important.log", false))
+
+        // 目录规则 temp/ 忽略目录本身及其内部文件，不误伤同名普通文件
         assertTrue(filter.isIgnoredPath("temp", true))
+        assertTrue(filter.isIgnoredPath("temp/a.txt", false))
         assertFalse(filter.isIgnoredPath("temp", false))
+
+        // 含斜杠规则锚定在根目录
+        assertTrue(filter.isIgnoredPath("src/generated", true))
+        assertTrue(filter.isIgnoredPath("src/generated/api.ts", false))
+        assertFalse(filter.isIgnoredPath("other/src/generated", true))
+
+        // 含方括号文件名正确转义匹配
+        assertTrue(filter.isIgnoredPath("cache[1].dat", false))
+        assertFalse(filter.isIgnoredPath("cache1.dat", false))
     }
 }

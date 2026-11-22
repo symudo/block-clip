@@ -12,7 +12,10 @@ class ClipStackService(private val project: Project) {
     @Synchronized
     fun addItem(item: ClipItem) {
         if (!item.isSnippet) {
-            val existingIndex = items.indexOfFirst { !it.isSnippet && it.file.path == item.file.path }
+            val targetKey = MarkdownFormatter.normalizePathKey(item.file.path)
+            val existingIndex = items.indexOfFirst {
+                !it.isSnippet && MarkdownFormatter.normalizePathKey(it.file.path) == targetKey
+            }
             if (existingIndex != -1) {
                 items[existingIndex] = item
                 return
@@ -39,8 +42,9 @@ class ClipStackService(private val project: Project) {
 
     @Synchronized
     fun removeByFile(file: VirtualFile): Int {
+        val targetKey = MarkdownFormatter.normalizePathKey(file.path)
         val prevSize = items.size
-        items.removeAll { it.file.path == file.path }
+        items.removeAll { MarkdownFormatter.normalizePathKey(it.file.path) == targetKey }
         return prevSize - items.size
     }
 

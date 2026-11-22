@@ -33,11 +33,11 @@ class ManageStackAction : AnAction(), DumbAware {
             return
         }
 
-        data class PopupEntry(val title: String, val item: ClipItem?)
+        data class PopupEntry(val title: String, val item: ClipItem?, val actionId: String? = null)
 
         val entries = mutableListOf<PopupEntry>()
-        entries.add(PopupEntry(BlockClipBundle.message("action.CopyStack.text"), null))
-        entries.add(PopupEntry(BlockClipBundle.message("action.ClearStack.text"), null))
+        entries.add(PopupEntry(BlockClipBundle.message("action.CopyStack.text"), null, "copy"))
+        entries.add(PopupEntry(BlockClipBundle.message("action.ClearStack.text"), null, "clear"))
 
         items.forEachIndexed { index, item ->
             val tag = if (item.isSnippet) "(${item.lineRange})" else "(${BlockClipBundle.message("label.whole.file")})"
@@ -50,42 +50,54 @@ class ManageStackAction : AnAction(), DumbAware {
         ) {
             override fun getTextFor(value: PopupEntry): String = value.title
 
+            // 必须覆写 hasSubstep，否则 IntelliJ Popup 框架不会展开二级“跳转 / 删除”子菜单
+            override fun hasSubstep(selectedValue: PopupEntry?): Boolean = selectedValue?.item != null
+
             override fun onChosen(selectedValue: PopupEntry?, finalChoice: Boolean): PopupStep<*>? {
                 if (selectedValue == null) return FINAL_CHOICE
 
                 if (selectedValue.item == null) {
-                    if (selectedValue.title == BlockClipBundle.message("action.CopyStack.text")) {
-                        CopyStackAction().actionPerformed(e)
-                    } else if (selectedValue.title == BlockClipBundle.message("action.ClearStack.text")) {
-                        ClearStackAction().actionPerformed(e)
+                    return doFinalStep {
+                        when (selectedValue.actionId) {
+                            "copy" -> CopyStackAction.executeCopyStack(project)
+                            "clear" -> ClearStackAction.executeClearStack(project)
+                        }
                     }
-                } else {
-                    val item = selectedValue.item
-                    return object : BaseListPopupStep<String>(
-                        item.relativePath,
-                        listOf(
-                            BlockClipBundle.message("action.jump.to.item"),
-                            BlockClipBundle.message("action.remove.item")
-                        )
-                    ) {
-                        override fun onChosen(actionTitle: String?, finalChoice2: Boolean): PopupStep<*>? {
-                            if (actionTitle == BlockClipBundle.message("action.remove.item")) {
+                }
+
+                val item = selectedValue.item
+                val jumpLabel = BlockClipBundle.message("action.jump.to.item")
+                val removeLabel = BlockClipBundle.message("action.remove.item")
+
+                return object : BaseListPopupStep<String>(
+                    item.relativePath,
+                    listOf(jumpLabel, removeLabel)
+                ) {
+                    override fun onChosen(actionTitle: String?, finalChoice2: Boolean): PopupStep<*>? {
+                        return doFinalStep {
+                            if (actionTitle == removeLabel) {
                                 stackService.removeById(item.id)
                                 notify(
                                     project,
                                     BlockClipBundle.message("notification.stack.item.removed"),
                                     NotificationType.INFORMATION
                                 )
-                            } else if (actionTitle == BlockClipBundle.message("action.jump.to.item")) {
-                                val startLineZeroBased = MarkdownFormatter.parseStartLineZeroBased(item.lineRange)
-                                val descriptor = OpenFileDescriptor(project, item.file, startLineZeroBased, 0)
-                                FileEditorManager.getInstance(project).openTextEditor(descriptor, true)
+                            } else if (actionTitle == jumpLabel) {
+                                if (!item.file.isValid) {
+                                    notify(
+                                        project,
+                                        BlockClipBundle.message("notification.file.not.found", item.relativePath),
+                                        NotificationType.WARNING
+                                    )
+                                } else {
+                                    val startLineZeroBased = MarkdownFormatter.parseStartLineZeroBased(item.lineRange)
+                                    val descriptor = OpenFileDescriptor(project, item.file, startLineZeroBased, 0)
+                                    FileEditorManager.getInstance(project).openTextEditor(descriptor, true)
+                                }
                             }
-                            return FINAL_CHOICE
                         }
                     }
                 }
-                return FINAL_CHOICE
             }
         }
 

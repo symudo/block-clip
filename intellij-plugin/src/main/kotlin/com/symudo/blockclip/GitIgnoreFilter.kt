@@ -4,7 +4,7 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.vfs.VirtualFile
 import java.io.File
 
-class GitIgnoreFilter(private val rootDir: File) {
+class GitIgnoreFilter(private val rootDir: File, includeDefaults: Boolean = true) {
 
     private val defaultIgnoredNames = setOf(
         ".git",
@@ -31,19 +31,24 @@ class GitIgnoreFilter(private val rootDir: File) {
     )
 
     init {
-        for (name in defaultIgnoredNames) {
-            addRule(name)
+        if (includeDefaults) {
+            for (name in defaultIgnoredNames) {
+                addRule(name)
+            }
         }
     }
 
-    fun loadGitIgnore(file: File) {
-        if (!file.exists() || !file.isFile) return
+    fun loadGitIgnore(file: File): Boolean {
+        if (!file.exists() || !file.isFile) return false
+        var loadedAny = false
         file.forEachLine { rawLine ->
             val line = rawLine.trim()
             if (line.isNotEmpty() && !line.startsWith("#")) {
                 addRule(line)
+                loadedAny = true
             }
         }
+        return loadedAny
     }
 
     private fun addRule(rawRule: String) {
@@ -56,6 +61,7 @@ class GitIgnoreFilter(private val rootDir: File) {
         if (isDirectoryOnly) {
             pattern = pattern.removeSuffix("/")
         }
+        if (pattern.isEmpty()) return
 
         val regexStr = wildcardToRegex(pattern)
         try {
@@ -68,8 +74,10 @@ class GitIgnoreFilter(private val rootDir: File) {
         val sb = StringBuilder()
         val startsWithSlash = pattern.startsWith("/")
         val cleanPattern = if (startsWithSlash) pattern.substring(1) else pattern
+        val hasInternalSlash = cleanPattern.contains('/')
 
-        if (startsWithSlash) {
+        // gitignore 规范：含斜杠（除尾部斜杠外）的模式锚定在当前 .gitignore 所在目录根
+        if (startsWithSlash || hasInternalSlash) {
             sb.append("^")
         } else {
             sb.append("(^|/)")
@@ -88,7 +96,7 @@ class GitIgnoreFilter(private val rootDir: File) {
                     }
                 }
                 '?' -> sb.append("[^/]")
-                '.', '(', ')', '+', '|', '^', '$', '@', '%', '{', '}' -> {
+                '.', '(', ')', '+', '|', '^', '$', '@', '%', '{', '}', '[', ']', '\\' -> {
                     sb.append('\\').append(c)
                 }
                 else -> sb.append(c)
@@ -100,13 +108,19 @@ class GitIgnoreFilter(private val rootDir: File) {
     }
 
     fun isIgnoredPath(relativePath: String, isDirectory: Boolean): Boolean {
-        val normalized = relativePath.replace('\\', '/')
+        val normalized = relativePath.replace('\\', '/').trimStart('/')
+        if (normalized.isEmpty()) return false
         if (!isDirectory && MarkdownFormatter.isSensitiveFile(normalized)) {
             return true
         }
         var ignored = false
         for (rule in patterns) {
             if (rule.isDirectoryOnly && !isDirectory) {
+                // 目录规则（如 build/）同样忽略其内部文件（如 build/a.js），但不忽略同名普通文件（如 build）
+                val match = rule.regex.find(normalized)
+                if (match != null && match.value.endsWith("/")) {
+                    ignored = !rule.isNegation
+                }
                 continue
             }
             if (rule.regex.containsMatchIn(normalized)) {
@@ -117,8 +131,13 @@ class GitIgnoreFilter(private val rootDir: File) {
     }
 
     fun isIgnored(virtualFile: VirtualFile): Boolean {
-        val fileSystemFile = File(virtualFile.path)
-        val relativePath = fileSystemFile.relativeToOrNull(rootDir)?.path?.replace('\\', '/') ?: virtualFile.name
+        val rootNorm = MarkdownFormatter.normalizePathKey(rootDir.path).trimEnd('/')
+        val fileNorm = MarkdownFormatter.normalizePathKey(virtualFile.path)
+        val relativePath = if (fileNorm.startsWith("$rootNorm/")) {
+            virtualFile.path.replace('\\', '/').substring(rootNorm.length + 1)
+        } else {
+            return false
+        }
         return isIgnoredPath(relativePath, virtualFile.isDirectory)
     }
 
@@ -129,40 +148,86 @@ class GitIgnoreFilter(private val rootDir: File) {
             indicator: ProgressIndicator? = null
         ): List<VirtualFile> {
             val folderFile = File(folder.path)
-            val filter = GitIgnoreFilter(folderFile)
+            val filters = mutableListOf<GitIgnoreFilter>()
 
-            // 1. 若存在项目根目录且与当前文件夹不同，先加载项目根目录的 .gitignore
-            if (projectBaseDir != null && projectBaseDir.exists() && projectBaseDir != folderFile) {
-                val rootGitIgnore = File(projectBaseDir, ".gitignore")
-                filter.loadGitIgnore(rootGitIgnore)
+            // 1. 构建多层级过滤器链：每个 .gitignore 以其自身所在目录为基准，修复根目录带路径前缀规则错位问题
+            if (projectBaseDir != null && projectBaseDir.exists()) {
+                val rootFilter = GitIgnoreFilter(projectBaseDir, includeDefaults = true)
+                rootFilter.loadGitIgnore(File(projectBaseDir, ".gitignore"))
+                filters.add(rootFilter)
+
+                val rootNorm = MarkdownFormatter.normalizePathKey(projectBaseDir.path).trimEnd('/')
+                val folderNorm = MarkdownFormatter.normalizePathKey(folderFile.path).trimEnd('/')
+                if (folderNorm.startsWith("$rootNorm/")) {
+                    val relParts = folderFile.path.replace('\\', '/')
+                        .substring(rootNorm.length + 1)
+                        .split('/')
+                        .filter { it.isNotEmpty() }
+                    var cur = projectBaseDir
+                    for (part in relParts) {
+                        cur = File(cur, part)
+                        val giFile = File(cur, ".gitignore")
+                        if (giFile.exists() && giFile.isFile) {
+                            val midFilter = GitIgnoreFilter(cur, includeDefaults = false)
+                            if (midFilter.loadGitIgnore(giFile)) {
+                                filters.add(midFilter)
+                            }
+                        }
+                    }
+                }
+            } else {
+                val localFilter = GitIgnoreFilter(folderFile, includeDefaults = true)
+                localFilter.loadGitIgnore(File(folderFile, ".gitignore"))
+                filters.add(localFilter)
             }
 
-            // 2. 加载当前文件夹的 .gitignore
-            val localGitIgnore = File(folderFile, ".gitignore")
-            filter.loadGitIgnore(localGitIgnore)
-
             val result = mutableListOf<VirtualFile>()
-            traverse(folder, filter, result, indicator)
+            val visitedDirs = mutableSetOf<String>()
+            traverse(folder, filters, result, visitedDirs, indicator)
             return result
         }
 
         private fun traverse(
             dir: VirtualFile,
-            filter: GitIgnoreFilter,
+            filters: List<GitIgnoreFilter>,
             result: MutableList<VirtualFile>,
+            visitedDirs: MutableSet<String>,
             indicator: ProgressIndicator?
         ) {
             indicator?.checkCanceled()
+            val canonicalKey = try {
+                MarkdownFormatter.normalizePathKey(File(dir.path).canonicalPath)
+            } catch (_: Exception) {
+                MarkdownFormatter.normalizePathKey(dir.path)
+            }
+            if (!visitedDirs.add(canonicalKey)) {
+                return
+            }
+
+            // 动态加载子目录自身的 .gitignore
+            val dirFile = File(dir.path)
+            val localGi = File(dirFile, ".gitignore")
+            val activeFilters = if (localGi.exists() && localGi.isFile &&
+                filters.none { MarkdownFormatter.normalizePathKey(it.rootDir.path) == MarkdownFormatter.normalizePathKey(dirFile.path) }
+            ) {
+                val subFilter = GitIgnoreFilter(dirFile, includeDefaults = false)
+                if (subFilter.loadGitIgnore(localGi)) filters + subFilter else filters
+            } else {
+                filters
+            }
+
             val children = dir.children ?: return
             for (child in children) {
                 indicator?.checkCanceled()
-                if (filter.isIgnored(child)) {
+                if (activeFilters.any { it.isIgnored(child) }) {
                     continue
                 }
                 if (child.isDirectory) {
-                    traverse(child, filter, result, indicator)
+                    traverse(child, activeFilters, result, visitedDirs, indicator)
                 } else {
-                    result.add(child)
+                    if (!MarkdownFormatter.isSensitiveFile(child.name)) {
+                        result.add(child)
+                    }
                 }
             }
         }

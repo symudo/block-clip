@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.util.Locale
 
 class MarkdownFormatterTest {
 
@@ -32,10 +33,26 @@ class MarkdownFormatterTest {
     }
 
     @Test
+    fun testExtensionlessLanguageDetection() {
+        assertEquals("dockerfile", MarkdownFormatter.getLanguageByName("Dockerfile"))
+        assertEquals("dockerfile", MarkdownFormatter.getLanguageByName("Dockerfile.prod"))
+        assertEquals("makefile", MarkdownFormatter.getLanguageByName("Makefile"))
+        assertEquals("cmake", MarkdownFormatter.getLanguageByName("CMakeLists.txt"))
+        assertEquals("typescriptreact", MarkdownFormatter.getLanguageByName("App.tsx"))
+        assertEquals("plaintext", MarkdownFormatter.getLanguageByName("README"))
+    }
+
+    @Test
+    fun testNormalizePathKey() {
+        assertEquals("d:/proj/src/app.kt", MarkdownFormatter.normalizePathKey("D:\\Proj\\Src\\App.kt", caseInsensitive = true))
+        assertEquals("d:/proj/src/app.kt", MarkdownFormatter.normalizePathKey("d:/Proj/Src/App.kt", caseInsensitive = true))
+        assertEquals("/proj/Src/App.kt", MarkdownFormatter.normalizePathKey("/proj/Src/App.kt", caseInsensitive = false))
+    }
+
+    @Test
     fun testFormatLineRangeAndOffByOneFix() {
         assertEquals("line 1", MarkdownFormatter.formatLineRange(0, 0, 12))
         assertEquals("lines 10-15", MarkdownFormatter.formatLineRange(9, 14, 8))
-        // 拖选停在下一行第 0 列时不多算一行
         assertEquals("lines 10-15", MarkdownFormatter.formatLineRange(9, 15, 0))
         assertEquals("line 10", MarkdownFormatter.formatLineRange(9, 10, 0))
     }
@@ -64,17 +81,25 @@ class MarkdownFormatterTest {
     }
 
     @Test
-    fun testTokenEstimationAndStats() {
-        assertEquals(0, MarkdownFormatter.estimateTokens(""))
-        assertEquals(100, MarkdownFormatter.estimateTokens("a".repeat(400)))
-        assertTrue(MarkdownFormatter.estimateTokens("你好世界测试代码") >= 5)
+    fun testTokenEstimationAndLocaleIndependentFormatting() {
+        val originalLocale = Locale.getDefault()
+        try {
+            // 模拟德语等逗号小数点系统 Locale，确保始终输出标准小数点格式
+            Locale.setDefault(Locale.GERMANY)
+            assertEquals(0, MarkdownFormatter.estimateTokens(""))
+            assertEquals(100, MarkdownFormatter.estimateTokens("a".repeat(400)))
+            assertTrue(MarkdownFormatter.estimateTokens("你好世界测试代码") >= 5)
 
-        assertEquals("512 B", MarkdownFormatter.formatBytes(512))
-        assertEquals("2.0 KB", MarkdownFormatter.formatBytes(2048))
-        assertEquals("2.00 MB", MarkdownFormatter.formatBytes(2L * 1024 * 1024))
+            assertEquals("512 B", MarkdownFormatter.formatBytes(512))
+            assertEquals("2.0 KB", MarkdownFormatter.formatBytes(2048))
+            assertEquals("2.00 MB", MarkdownFormatter.formatBytes(2L * 1024 * 1024))
+            assertEquals("~1.5k tokens", MarkdownFormatter.formatTokenCount(1500))
 
-        val stats = MarkdownFormatter.formatStats("console.log('hello world');")
-        assertTrue(stats.contains("B, ~"))
-        assertTrue(stats.endsWith("tokens"))
+            val stats = MarkdownFormatter.formatStats("console.log('hello world');")
+            assertTrue(stats.contains("B, ~"))
+            assertTrue(stats.endsWith("tokens"))
+        } finally {
+            Locale.setDefault(originalLocale)
+        }
     }
 }
