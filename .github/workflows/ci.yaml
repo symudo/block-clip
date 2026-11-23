@@ -21,7 +21,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ------------------- 1. VS Code 端校验 -------------------
+      - name: Detect IntelliJ Plugin Changes
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          elif git rev-parse HEAD~1 >/dev/null 2>&1; then
+            CHANGED=$(git diff --name-only HEAD~1 HEAD)
+          else
+            CHANGED="intellij-plugin/"
+          fi
+          if echo "$CHANGED" | grep -qE '^(intellij-plugin/|\.github/workflows/ci\.yaml)'; then
+            echo "intellij=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "intellij=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ------------------- 1. VS Code & 全仓库代码规范校验 -------------------
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -40,14 +56,21 @@ jobs:
         run: |
           pnpm test
 
-      # ------------------- 2. IntelliJ 插件端校验 -------------------
+      # ------------------- 2. IntelliJ 插件端校验（按需执行 + Gradle 缓存） -------------------
       - name: Setup Java
-        uses: actions/setup-java@v4
+        if: steps.changes.outputs.intellij == 'true'
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '21'
+          cache: 'gradle'
+          cache-dependency-path: |
+            intellij-plugin/build.gradle.kts
+            intellij-plugin/settings.gradle.kts
+            intellij-plugin/gradle/wrapper/gradle-wrapper.properties
 
       - name: Test IntelliJ Plugin
+        if: steps.changes.outputs.intellij == 'true'
         run: |
           cd intellij-plugin
           chmod +x ./gradlew

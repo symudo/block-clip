@@ -46,10 +46,15 @@ jobs:
 
       # ------------------- 2. 构建 IntelliJ / WebStorm 插件 -------------------
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '21'
+          cache: 'gradle'
+          cache-dependency-path: |
+            intellij-plugin/build.gradle.kts
+            intellij-plugin/settings.gradle.kts
+            intellij-plugin/gradle/wrapper/gradle-wrapper.properties
 
       - name: Build IntelliJ Plugin
         run: |
