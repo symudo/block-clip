@@ -1,5 +1,6 @@
 {
   "extension.description": "Copies file content with its relative path to the clipboard",
+  "config.maxContentSizeMB.description": "Maximum total text size (in MB) allowed to copy to the clipboard. Set to 0 for unlimited.",
   "command.copySelection": "Copy Selected Code",
   "command.copyCode": "Copy Code",
   "command.copyFolderCode": "Copy Folder Code",

@@ -1,6 +1,7 @@
 import assert from 'node:assert'
 import { describe, it } from 'node:test'
 import {
+  DEFAULT_MAX_CONTENT_SIZE_MB,
   estimateTokens,
   formatBytes,
   formatFileBlock,
@@ -10,7 +11,8 @@ import {
   getLanguage,
   isBinaryFile,
   isSensitiveFile,
-  normalizePathKey
+  normalizePathKey,
+  resolveMaxContentLength
 } from '../formatter'
 
 describe('Formatter & Helpers', () => {
@@ -95,5 +97,13 @@ describe('Formatter & Helpers', () => {
     const formatted = formatFileBlock('src/app.ts', 'typescript', 'console.log("part");', 'lines 10-15')
     assert.ok(formatted.startsWith('File: src/app.ts (lines 10-15)\n\n```typescript\n'))
     assert.ok(formatted.endsWith('```\n'))
+  })
+
+  it('resolves custom max content size in MB including unlimited (0) and invalid values', () => {
+    assert.strictEqual(resolveMaxContentLength(50), 50 * 1024 * 1024)
+    assert.strictEqual(resolveMaxContentLength(100), 100 * 1024 * 1024)
+    assert.strictEqual(resolveMaxContentLength(0), Number.MAX_SAFE_INTEGER)
+    assert.strictEqual(resolveMaxContentLength(-5), Number.MAX_SAFE_INTEGER)
+    assert.strictEqual(resolveMaxContentLength(Number.NaN), DEFAULT_MAX_CONTENT_SIZE_MB * 1024 * 1024)
   })
 })

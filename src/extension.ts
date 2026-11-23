@@ -4,14 +4,15 @@ import ignore from 'ignore'
 import * as vscode from 'vscode'
 import { ClipStackManager } from './clipStack'
 import {
+  DEFAULT_MAX_CONTENT_SIZE_MB,
   formatFileBlock,
   formatLineRange,
   formatStats,
   getLanguage,
   isBinaryFile,
   isSensitiveFile,
-  MAX_CONTENT_LENGTH,
-  normalizePathKey
+  normalizePathKey,
+  resolveMaxContentLength
 } from './formatter'
 
 interface ScopedIgnore {
@@ -24,6 +25,7 @@ interface ProcessUrisResult {
   processedCount: number
   stoppedEarly: boolean
   skippedMissingCount: number
+  firstProcessedPath?: string
 }
 
 const DEFAULT_IGNORES = [
@@ -41,6 +43,14 @@ const DEFAULT_IGNORES = [
   'bun.lockb'
 ]
 
+function getMaxContentConfig(): { sizeMB: number; maxLength: number } {
+  const raw = vscode.workspace
+    .getConfiguration('blockClip')
+    .get<number>('maxContentSizeMB', DEFAULT_MAX_CONTENT_SIZE_MB)
+  const sizeMB = typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_MAX_CONTENT_SIZE_MB
+  return { sizeMB, maxLength: resolveMaxContentLength(sizeMB) }
+}
+
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message
@@ -49,6 +59,9 @@ function getErrorMessage(error: unknown): string {
 }
 
 function getRelativePath(uri: vscode.Uri, workspaceFolder?: vscode.WorkspaceFolder): string {
+  if (uri.scheme === 'untitled') {
+    return path.basename(uri.path) || uri.toString()
+  }
   const folder = workspaceFolder ?? vscode.workspace.getWorkspaceFolder(uri)
   return folder ? path.relative(folder.uri.fsPath, uri.fsPath).replace(/\\/g, '/') : path.basename(uri.fsPath)
 }
@@ -100,7 +113,6 @@ async function getAllFileUris(
     }
     visitedRealDirs.add(realDir)
   } catch {
-    // 虚拟文件系统或无法 realpath 时回退使用 fsPath 防环
     const fallbackKey = normalizePathKey(directoryUri.fsPath)
     if (visitedRealDirs.has(fallbackKey)) {
       return []
@@ -108,7 +120,6 @@ async function getAllFileUris(
     visitedRealDirs.add(fallbackKey)
   }
 
-  // 加载当前目录自身的 .gitignore（如果还未被加载过）
   let activeScopes = scopes
   const dirKey = normalizePathKey(directoryUri.fsPath)
   if (!scopes.some((s) => normalizePathKey(s.baseDir) === dirKey)) {
@@ -154,14 +165,12 @@ async function collectFolderFileUris(
 ): Promise<vscode.Uri[]> {
   const scopes: ScopedIgnore[] = []
 
-  // 若存在工作区根目录，从根目录向下沿途收集 .gitignore，保证每层规则均以自身所在目录为基准路径
   if (workspaceFolder) {
     const rootScope = await readGitIgnoreScope(workspaceFolder.uri, true)
     if (rootScope) {
       scopes.push(rootScope)
     }
 
-    // 收集工作区根与目标子目录之间可能存在的中间层 .gitignore
     const relToRoot = path.relative(workspaceFolder.uri.fsPath, folderUri.fsPath)
     if (relToRoot && !relToRoot.startsWith('..') && !path.isAbsolute(relToRoot)) {
       const parts = relToRoot.split(path.sep).filter(Boolean)
@@ -188,10 +197,9 @@ async function getFormattedFileString(
   fileUri: vscode.Uri,
   remainingBudget: number
 ): Promise<{ status: 'ok'; block: string } | { status: 'missing' } | { status: 'too_large' }> {
-  // 多根工作区下按每个文件独立归属计算相对路径
   const relativePath = getRelativePath(fileUri)
 
-  if (isBinaryFile(fileUri.fsPath)) {
+  if (fileUri.scheme !== 'untitled' && isBinaryFile(fileUri.fsPath)) {
     const block = `File: ${relativePath}\n`
     return block.length > remainingBudget ? { status: 'too_large' } : { status: 'ok', block }
   }
@@ -200,13 +208,17 @@ async function getFormattedFileString(
   let language: string
 
   const targetKey = normalizePathKey(fileUri.fsPath)
-  const openDoc = vscode.workspace.textDocuments.find((d) => normalizePathKey(d.uri.fsPath) === targetKey)
+  const openDoc = vscode.workspace.textDocuments.find(
+    (d) => d.uri.toString() === fileUri.toString() || normalizePathKey(d.uri.fsPath) === targetKey
+  )
   if (openDoc) {
     fileContent = openDoc.getText()
     if (fileContent.length > remainingBudget) {
       return { status: 'too_large' }
     }
     language = getLanguage(fileUri.fsPath, openDoc.languageId)
+  } else if (fileUri.scheme === 'untitled') {
+    return { status: 'missing' }
   } else {
     try {
       const stat = await vscode.workspace.fs.stat(fileUri)
@@ -228,14 +240,15 @@ async function getFormattedFileString(
   return { status: 'ok', block }
 }
 
-async function processUris(uris: vscode.Uri[]): Promise<ProcessUrisResult> {
+async function processUris(uris: vscode.Uri[], maxLength: number): Promise<ProcessUrisResult> {
   const allFormattedContents: string[] = []
   let currentLength = 0
   let stoppedEarly = false
   let skippedMissingCount = 0
+  let firstProcessedPath: string | undefined
 
   for (const uri of uris) {
-    const remaining = MAX_CONTENT_LENGTH - currentLength
+    const remaining = maxLength - currentLength
     const result = await getFormattedFileString(uri, remaining)
 
     if (result.status === 'missing') {
@@ -247,6 +260,9 @@ async function processUris(uris: vscode.Uri[]): Promise<ProcessUrisResult> {
       break
     }
 
+    if (!firstProcessedPath) {
+      firstProcessedPath = uri.scheme === 'untitled' ? getRelativePath(uri) : uri.fsPath
+    }
     allFormattedContents.push(result.block)
     currentLength += result.block.length
   }
@@ -256,7 +272,8 @@ async function processUris(uris: vscode.Uri[]): Promise<ProcessUrisResult> {
     content: finalContent,
     processedCount: allFormattedContents.length,
     stoppedEarly,
-    skippedMissingCount
+    skippedMissingCount,
+    firstProcessedPath
   }
 }
 
@@ -284,6 +301,7 @@ export function activate(context: vscode.ExtensionContext) {
       return
     }
 
+    const { sizeMB, maxLength } = getMaxContentConfig()
     const doc = editor.document
     const selection = editor.selection
     const snippetText = doc.getText(selection)
@@ -292,15 +310,15 @@ export function activate(context: vscode.ExtensionContext) {
     const lang = getLanguage(doc.uri.fsPath, doc.languageId)
     const formatted = formatFileBlock(relPath, lang, snippetText, lineRange)
 
-    if (formatted.length > MAX_CONTENT_LENGTH) {
-      vscode.window.showWarningMessage(vscode.l10n.t('Selected content exceeds the 15MB size limit.'))
+    if (formatted.length > maxLength) {
+      vscode.window.showWarningMessage(vscode.l10n.t('Selected content exceeds the {0}MB size limit.', sizeMB))
       return
     }
 
     await vscode.env.clipboard.writeText(formatted)
     const stats = formatStats(formatted)
     vscode.window.showInformationMessage(
-      vscode.l10n.t('Snippet copied: {0} ({1}) [{2}]', path.basename(doc.uri.fsPath), lineRange, stats)
+      vscode.l10n.t('Snippet copied: {0} ({1}) [{2}]', path.basename(relPath), lineRange, stats)
     )
   })
 
@@ -324,7 +342,13 @@ export function activate(context: vscode.ExtensionContext) {
 
       try {
         const fileUris: vscode.Uri[] = []
-        const statResults = await Promise.allSettled(targetUris.map((uri) => vscode.workspace.fs.stat(uri)))
+        const statResults = await Promise.allSettled(
+          targetUris.map((uri) =>
+            uri.scheme === 'untitled'
+              ? Promise.resolve({ type: vscode.FileType.File } as vscode.FileStat)
+              : vscode.workspace.fs.stat(uri)
+          )
+        )
         statResults.forEach((res, index) => {
           if (res.status === 'fulfilled' && (res.value.type & vscode.FileType.File) !== 0) {
             fileUris.push(targetUris[index])
@@ -336,12 +360,18 @@ export function activate(context: vscode.ExtensionContext) {
           return
         }
 
-        const { content: finalContent, processedCount, stoppedEarly } = await processUris(fileUris)
+        const { sizeMB, maxLength } = getMaxContentConfig()
+        const {
+          content: finalContent,
+          processedCount,
+          stoppedEarly,
+          firstProcessedPath
+        } = await processUris(fileUris, maxLength)
 
         if (processedCount === 0) {
           vscode.window.showWarningMessage(
             stoppedEarly
-              ? vscode.l10n.t('No files copied. File size exceeds the 15MB limit.')
+              ? vscode.l10n.t('No files copied. File size exceeds the {0}MB limit.', sizeMB)
               : vscode.l10n.t('No valid files found in the selection.')
           )
           return
@@ -363,9 +393,8 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.l10n.t('Copied contents of {0} file(s) [{1}].', processedCount, contentStats)
           )
         } else {
-          vscode.window.showInformationMessage(
-            vscode.l10n.t('Code copied: {0} [{1}]', path.basename(fileUris[0].fsPath), contentStats)
-          )
+          const copiedName = path.basename(firstProcessedPath ?? fileUris[0].fsPath)
+          vscode.window.showInformationMessage(vscode.l10n.t('Code copied: {0} [{1}]', copiedName, contentStats))
         }
       } catch (error) {
         console.error(error)
@@ -398,12 +427,13 @@ export function activate(context: vscode.ExtensionContext) {
           return
         }
 
-        const { content: finalContent, processedCount, stoppedEarly } = await processUris(allFileUris)
+        const { sizeMB, maxLength } = getMaxContentConfig()
+        const { content: finalContent, processedCount, stoppedEarly } = await processUris(allFileUris, maxLength)
 
         if (processedCount === 0) {
           vscode.window.showWarningMessage(
             stoppedEarly
-              ? vscode.l10n.t('No files copied. File size exceeds the 15MB limit.')
+              ? vscode.l10n.t('No files copied. File size exceeds the {0}MB limit.', sizeMB)
               : vscode.l10n.t('The selected folder is empty or contains no copyable files.')
           )
           return
@@ -492,7 +522,13 @@ export function activate(context: vscode.ExtensionContext) {
 
       try {
         const fileUris: vscode.Uri[] = []
-        const statResults = await Promise.allSettled(targetUris.map((uri) => vscode.workspace.fs.stat(uri)))
+        const statResults = await Promise.allSettled(
+          targetUris.map((uri) =>
+            uri.scheme === 'untitled'
+              ? Promise.resolve({ type: vscode.FileType.File } as vscode.FileStat)
+              : vscode.workspace.fs.stat(uri)
+          )
+        )
         for (let i = 0; i < statResults.length; i++) {
           const res = statResults[i]
           if (res.status !== 'fulfilled') {
@@ -517,7 +553,9 @@ export function activate(context: vscode.ExtensionContext) {
         for (const uri of fileUris) {
           const relPath = getRelativePath(uri)
           const targetKey = normalizePathKey(uri.fsPath)
-          const openDoc = vscode.workspace.textDocuments.find((d) => normalizePathKey(d.uri.fsPath) === targetKey)
+          const openDoc = vscode.workspace.textDocuments.find(
+            (d) => d.uri.toString() === uri.toString() || normalizePathKey(d.uri.fsPath) === targetKey
+          )
           const lang = getLanguage(uri.fsPath, openDoc?.languageId)
 
           stackManager.addItem({
@@ -593,12 +631,13 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     try {
-      const { content: finalContent, processedCount, stoppedEarly } = await stackManager.formatAll()
+      const { sizeMB, maxLength } = getMaxContentConfig()
+      const { content: finalContent, processedCount, stoppedEarly } = await stackManager.formatAll(maxLength)
 
       if (processedCount === 0) {
         vscode.window.showWarningMessage(
           stoppedEarly
-            ? vscode.l10n.t('No items copied from clip stack. Content exceeds the 15MB limit.')
+            ? vscode.l10n.t('No items copied from clip stack. Content exceeds the {0}MB limit.', sizeMB)
             : vscode.l10n.t('No readable files remain in the clip stack.')
         )
         return
@@ -694,11 +733,15 @@ export function activate(context: vscode.ExtensionContext) {
     qp.placeholder = vscode.l10n.t('Select an item to view, or click the trash button to delete it')
     qp.items = qpItems
 
+    qp.onDidHide(() => {
+      qp.dispose()
+    })
+
     qp.onDidTriggerItemButton((e) => {
       if (e.item.clipId) {
         stackManager.removeById(e.item.clipId)
         vscode.window.showInformationMessage(vscode.l10n.t('Removed selected item from clip stack.'))
-        qp.dispose()
+        qp.hide()
         if (stackManager.count() > 0) {
           vscode.commands.executeCommand('copy-code-with-path.manageStack')
         }
@@ -707,7 +750,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     qp.onDidAccept(async () => {
       const selected = qp.selectedItems[0]
-      qp.dispose()
+      qp.hide()
       if (!selected) return
 
       if (selected.action === 'copy') {

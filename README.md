@@ -29,9 +29,11 @@
   - **二进制与敏感文件保护**：二进制文件仅输出路径标识；文件夹递归扫描默认排除 `.env`、密钥证书（同时保留 `.env.example` / `.env.sample` / `.env.template` 安全模板）。
   - **体积与 Token 估算**：每次复制反馈均展示总大小与粗略 Token 数量，方便把控 AI 上下文预算。
 - **文件夹递归与 .gitignore 规则级联**：
-  - 智能级联读取项目根目录及当前文件夹的 `.gitignore` 过滤规则。
+  - 智能级联读取项目根目录、中间目录及子目录的 `.gitignore` 过滤规则。
   - 默认忽略 `.git`、`node_modules`、`dist`、`build`、`.idea`、`.vscode` 等目录。
-  - 内置 15MB 保护阈值，防止意外超大内容溢出。
+  - **自定义大小上限保护**：默认上限 **50 MB**，支持在设置中自由调整（设为 `0` 表示无限制）：
+    - **VS Code**：设置搜索 `blockClip.maxContentSizeMB`
+    - **JetBrains (IDEA / WebStorm)**：`Settings -> Tools -> BlockClip`
 - **原生多语言国际化 (i18n)**：
   - 菜单名称、描述以及操作完成后的提示气泡，完全根据 IDE 当前界面语言自动切换（支持简体中文与英文）。
 

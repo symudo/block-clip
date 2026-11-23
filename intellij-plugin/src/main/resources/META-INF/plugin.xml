@@ -26,6 +26,11 @@
         <notificationGroup id="BlockClip Notification"
                            displayType="BALLOON"
                            key="notification.group.name"/>
+        <applicationConfigurable parentId="tools"
+                                 instance="com.symudo.blockclip.BlockClipConfigurable"
+                                 id="com.symudo.blockclip.settings"
+                                 key="settings.display.name"
+                                 bundle="messages.BlockClipBundle"/>
     </extensions>
 
     <actions>

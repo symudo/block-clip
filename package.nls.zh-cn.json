@@ -1,5 +1,6 @@
 {
   "extension.description": "将文件内容及其相对路径复制到剪贴板",
+  "config.maxContentSizeMB.description": "允许复制到剪贴板的最大文本总大小（单位：MB）。设为 0 表示不限制上限。",
   "command.copySelection": "复制选中代码",
   "command.copyCode": "复制文件代码",
   "command.copyFolderCode": "复制文件夹代码",

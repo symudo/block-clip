@@ -99,15 +99,26 @@ class ClipStackTest {
         )
         assertEquals(1, res.processedCount)
         assertEquals(1, res.skippedMissingCount)
+        assertEquals("alive.ts", res.firstProcessedFileName)
         assertFalse(res.content.contains("deleted.ts"))
         assertTrue(res.content.contains("alive.ts"))
 
         // 验证超大文件在预检阶段即中止，不会触发 contentsToByteArray() 读取到内存
-        val hugeFile = DummyVirtualFile("huge.sql", fakeLength = 50L * 1024 * 1024, failOnRead = true)
+        val hugeFile = DummyVirtualFile("huge.sql", fakeLength = 60L * 1024 * 1024, failOnRead = true)
         val hugeRes = MarkdownFormatter.processFiles(listOf(hugeFile), null)
         assertEquals(0, hugeRes.processedCount)
         assertTrue(hugeRes.stoppedEarly)
         assertEquals("", hugeRes.content)
+
+        // 验证设置为无限制（0MB -> Long.MAX_VALUE）时允许复制超过默认上限的文件
+        val customAllowed = DummyVirtualFile("big.sql", rawContent = "SELECT 1;", fakeLength = 100L * 1024 * 1024)
+        val unlimitedRes = MarkdownFormatter.processFiles(
+            listOf(customAllowed),
+            null,
+            maxLength = MarkdownFormatter.resolveMaxContentLength(0)
+        )
+        assertEquals(1, unlimitedRes.processedCount)
+        assertFalse(unlimitedRes.stoppedEarly)
     }
 
     @Test

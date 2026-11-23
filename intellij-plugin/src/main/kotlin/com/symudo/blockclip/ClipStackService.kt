@@ -63,9 +63,9 @@ class ClipStackService(private val project: Project) {
         return items.size
     }
 
-    fun formatAll(): MarkdownFormatter.ProcessResult {
+    fun formatAll(maxLength: Long = BlockClipSettings.getCurrentMaxLength()): MarkdownFormatter.ProcessResult {
         val currentItems = getItems()
-        return MarkdownFormatter.processClipItems(currentItems, project)
+        return MarkdownFormatter.processClipItems(currentItems, project, maxLength)
     }
 
     companion object {

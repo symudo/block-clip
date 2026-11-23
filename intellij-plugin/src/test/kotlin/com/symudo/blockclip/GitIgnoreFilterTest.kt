@@ -36,6 +36,7 @@ class GitIgnoreFilterTest {
             !important.log
             src/generated/
             cache[1].dat
+            **/snapshots/
             """.trimIndent()
         )
 
@@ -59,5 +60,11 @@ class GitIgnoreFilterTest {
         // 含方括号文件名正确转义匹配
         assertTrue(filter.isIgnoredPath("cache[1].dat", false))
         assertFalse(filter.isIgnoredPath("cache1.dat", false))
+
+        // **/ 规则同时命中根目录与任意深层目录
+        assertTrue(filter.isIgnoredPath("snapshots", true))
+        assertTrue(filter.isIgnoredPath("snapshots/a.snap", false))
+        assertTrue(filter.isIgnoredPath("packages/ui/snapshots", true))
+        assertTrue(filter.isIgnoredPath("packages/ui/snapshots/btn.snap", false))
     }
 }

@@ -89,8 +89,14 @@ class GitIgnoreFilter(private val rootDir: File, includeDefaults: Boolean = true
             when (c) {
                 '*' -> {
                     if (i + 1 < cleanPattern.length && cleanPattern[i + 1] == '*') {
-                        sb.append(".*")
-                        i++
+                        if (i + 2 < cleanPattern.length && cleanPattern[i + 2] == '/') {
+                            // **/ 同时匹配根目录（零层目录）与任意深层目录
+                            sb.append("(?:.*/)?")
+                            i += 2
+                        } else {
+                            sb.append(".*")
+                            i++
+                        }
                     } else {
                         sb.append("[^/]*")
                     }

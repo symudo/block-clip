@@ -1,6 +1,21 @@
 import * as path from 'node:path'
 
-export const MAX_CONTENT_LENGTH = 15 * 1024 * 1024 // 15MB
+export const DEFAULT_MAX_CONTENT_SIZE_MB = 50
+export const MAX_CONTENT_LENGTH = DEFAULT_MAX_CONTENT_SIZE_MB * 1024 * 1024
+
+/**
+ * 将用户配置的 MB 上限换算为最大字符/字节数。
+ * 0 或负数表示无限制（Number.MAX_SAFE_INTEGER）；非有限数字回退默认值。
+ */
+export function resolveMaxContentLength(sizeMB: number): number {
+  if (!Number.isFinite(sizeMB)) {
+    return MAX_CONTENT_LENGTH
+  }
+  if (sizeMB <= 0) {
+    return Number.MAX_SAFE_INTEGER
+  }
+  return Math.floor(sizeMB * 1024 * 1024)
+}
 
 export const binaryFileExtensions = new Set([
   'png',

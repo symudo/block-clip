@@ -1,4 +1,5 @@
 // 使用 CommonJS 的 require 语法
+const fs = require('node:fs')
 const process = require('node:process')
 const esbuild = require('esbuild')
 
@@ -27,6 +28,9 @@ const plugins = [
 ]
 
 async function main() {
+  if (production) {
+    fs.rmSync('dist', { recursive: true, force: true })
+  }
   const ctx = await esbuild.context({
     entryPoints: ['src/extension.ts'],
     bundle: true,

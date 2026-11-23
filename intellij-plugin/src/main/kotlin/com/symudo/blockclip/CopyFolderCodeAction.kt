@@ -64,11 +64,13 @@ class CopyFolderCodeAction : AnAction(), DumbAware {
                     }
 
                     indicator.checkCanceled()
-                    val result = MarkdownFormatter.processFiles(files, project)
+                    val maxSizeMB = BlockClipSettings.getCurrentMaxSizeMB()
+                    val maxLength = BlockClipSettings.getCurrentMaxLength()
+                    val result = MarkdownFormatter.processFiles(files, project, maxLength)
 
                     if (result.processedCount == 0) {
                         val warnMsg = if (result.stoppedEarly) {
-                            BlockClipBundle.message("notification.error.too.large")
+                            BlockClipBundle.message("notification.error.too.large", maxSizeMB)
                         } else {
                             BlockClipBundle.message("notification.empty.folder")
                         }

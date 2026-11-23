@@ -102,4 +102,14 @@ class MarkdownFormatterTest {
             Locale.setDefault(originalLocale)
         }
     }
+
+    @Test
+    fun testResolveMaxContentLengthNoOverflow() {
+        assertEquals(50L * 1024L * 1024L, MarkdownFormatter.resolveMaxContentLength(50))
+        // 验证 2048MB 不会发生 32 位 Int 溢出变成负数
+        assertEquals(2048L * 1024L * 1024L, MarkdownFormatter.resolveMaxContentLength(2048))
+        assertTrue(MarkdownFormatter.resolveMaxContentLength(2048) > 0L)
+        assertEquals(Long.MAX_VALUE, MarkdownFormatter.resolveMaxContentLength(0))
+        assertEquals(Long.MAX_VALUE, MarkdownFormatter.resolveMaxContentLength(-10))
+    }
 }

@@ -65,9 +65,11 @@ class CopyCodeAction : AnAction(), DumbAware {
 
             val file = FileDocumentManager.getInstance().getFile(document)
             if (file != null) {
+                val maxSizeMB = BlockClipSettings.getCurrentMaxSizeMB()
+                val maxLength = BlockClipSettings.getCurrentMaxLength()
                 val formatted = MarkdownFormatter.formatSelection(file, project, selectedText, lineRange)
-                if (formatted.length > MarkdownFormatter.MAX_CONTENT_LENGTH) {
-                    notify(project, BlockClipBundle.message("notification.error.too.large"), NotificationType.WARNING)
+                if (formatted.length.toLong() > maxLength) {
+                    notify(project, BlockClipBundle.message("notification.error.too.large", maxSizeMB), NotificationType.WARNING)
                     return
                 }
                 CopyPasteManager.getInstance().setContents(StringSelection(formatted))
@@ -97,11 +99,13 @@ class CopyCodeAction : AnAction(), DumbAware {
                 indicator.isIndeterminate = true
                 try {
                     indicator.checkCanceled()
-                    val result = MarkdownFormatter.processFiles(files, project)
+                    val maxSizeMB = BlockClipSettings.getCurrentMaxSizeMB()
+                    val maxLength = BlockClipSettings.getCurrentMaxLength()
+                    val result = MarkdownFormatter.processFiles(files, project, maxLength)
 
                     if (result.processedCount == 0) {
                         val warnMsg = if (result.stoppedEarly) {
-                            BlockClipBundle.message("notification.error.too.large")
+                            BlockClipBundle.message("notification.error.too.large", maxSizeMB)
                         } else {
                             BlockClipBundle.message("notification.no.files")
                         }
@@ -125,7 +129,7 @@ class CopyCodeAction : AnAction(), DumbAware {
                         )
                         else -> BlockClipBundle.message(
                             "notification.copied.single",
-                            files[0].name,
+                            result.firstProcessedFileName ?: files[0].name,
                             stats
                         )
                     }

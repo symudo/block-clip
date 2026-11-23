@@ -53,11 +53,13 @@ class CopyStackAction : AnAction(), DumbAware {
                     indicator.isIndeterminate = true
                     try {
                         indicator.checkCanceled()
-                        val result = stackService.formatAll()
+                        val maxSizeMB = BlockClipSettings.getCurrentMaxSizeMB()
+                        val maxLength = BlockClipSettings.getCurrentMaxLength()
+                        val result = stackService.formatAll(maxLength)
 
                         if (result.processedCount == 0) {
                             val warnMsg = if (result.stoppedEarly) {
-                                BlockClipBundle.message("notification.error.too.large")
+                                BlockClipBundle.message("notification.error.too.large", maxSizeMB)
                             } else {
                                 BlockClipBundle.message("notification.stack.no.readable")
                             }

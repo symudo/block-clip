@@ -11,7 +11,19 @@ import kotlin.math.ceil
 import kotlin.math.max
 
 object MarkdownFormatter {
-    const val MAX_CONTENT_LENGTH = 15 * 1024 * 1024 // 15MB
+    const val DEFAULT_MAX_CONTENT_SIZE_MB = 50
+    const val MAX_CONTENT_LENGTH: Long = DEFAULT_MAX_CONTENT_SIZE_MB.toLong() * 1024L * 1024L
+
+    /**
+     * 将用户配置的 MB 上限换算为最大字符/字节数（使用 Long 避免大数值 Int 溢出）。
+     * <= 0 表示无限制（Long.MAX_VALUE）。
+     */
+    fun resolveMaxContentLength(sizeMB: Int): Long {
+        if (sizeMB <= 0) {
+            return Long.MAX_VALUE
+        }
+        return sizeMB.toLong() * 1024L * 1024L
+    }
 
     private val isWindows = System.getProperty("os.name").lowercase(Locale.ROOT).contains("win")
 
@@ -230,7 +242,7 @@ object MarkdownFormatter {
         object TooLarge : FileReadResult()
     }
 
-    private fun readFileContentSafely(file: VirtualFile, remainingBudget: Int): FileReadResult {
+    private fun readFileContentSafely(file: VirtualFile, remainingBudget: Long): FileReadResult {
         if (!file.isValid) {
             return FileReadResult.Missing
         }
@@ -242,7 +254,7 @@ object MarkdownFormatter {
                 if (!file.isValid) null else FileDocumentManager.getInstance().getDocument(file)?.text
             }
             if (docText != null) {
-                return if (docText.length > remainingBudget) {
+                return if (docText.length.toLong() > remainingBudget) {
                     FileReadResult.TooLarge
                 } else {
                     FileReadResult.Ok(docText)
@@ -251,13 +263,13 @@ object MarkdownFormatter {
         }
 
         // 读取磁盘前先预检物理大小，避免将超大文件整份读入内存
-        if (file.length > remainingBudget.toLong()) {
+        if (file.length > remainingBudget) {
             return FileReadResult.TooLarge
         }
 
         return try {
             val text = String(file.contentsToByteArray(), Charsets.UTF_8)
-            if (text.length > remainingBudget) {
+            if (text.length.toLong() > remainingBudget) {
                 FileReadResult.TooLarge
             } else {
                 FileReadResult.Ok(text)
@@ -283,21 +295,23 @@ object MarkdownFormatter {
         val content: String,
         val processedCount: Int,
         val stoppedEarly: Boolean,
-        val skippedMissingCount: Int = 0
+        val skippedMissingCount: Int = 0,
+        val firstProcessedFileName: String? = null
     )
 
     fun processFiles(
         files: List<VirtualFile>,
         project: Project?,
-        maxLength: Int = MAX_CONTENT_LENGTH
+        maxLength: Long = BlockClipSettings.getCurrentMaxLength()
     ): ProcessResult {
         val formattedContents = mutableListOf<String>()
-        var currentLength = 0
+        var currentLength = 0L
         var stoppedEarly = false
         var skippedMissing = 0
+        var firstProcessedFileName: String? = null
 
         for (file in files) {
-            val remaining = maxLength - currentLength
+            val remaining = if (maxLength == Long.MAX_VALUE) Long.MAX_VALUE else maxLength - currentLength
             val relativePath = getRelativePath(file, project)
             val block = if (isBinaryFile(file)) {
                 "File: $relativePath\n"
@@ -319,16 +333,19 @@ object MarkdownFormatter {
                 }
             }
 
-            if (currentLength + block.length > maxLength) {
+            if (block.length.toLong() > remaining) {
                 stoppedEarly = true
                 break
             }
+            if (firstProcessedFileName == null) {
+                firstProcessedFileName = file.name
+            }
             formattedContents.add(block)
-            currentLength += block.length
+            currentLength += block.length.toLong()
         }
 
         val finalContent = formattedContents.joinToString("\n\n---\n\n")
-        return ProcessResult(finalContent, formattedContents.size, stoppedEarly, skippedMissing)
+        return ProcessResult(finalContent, formattedContents.size, stoppedEarly, skippedMissing, firstProcessedFileName)
     }
 
     fun formatClipItem(item: ClipItem, project: Project?): String {
@@ -340,7 +357,7 @@ object MarkdownFormatter {
         val fileContent = if (item.isSnippet) {
             item.snippetContent ?: ""
         } else {
-            when (val read = readFileContentSafely(item.file, MAX_CONTENT_LENGTH)) {
+            when (val read = readFileContentSafely(item.file, BlockClipSettings.getCurrentMaxLength())) {
                 is FileReadResult.Ok -> read.content
                 else -> ""
             }
@@ -359,15 +376,16 @@ object MarkdownFormatter {
     fun processClipItems(
         items: List<ClipItem>,
         project: Project?,
-        maxLength: Int = MAX_CONTENT_LENGTH
+        maxLength: Long = BlockClipSettings.getCurrentMaxLength()
     ): ProcessResult {
         val formattedContents = mutableListOf<String>()
-        var currentLength = 0
+        var currentLength = 0L
         var stoppedEarly = false
         var skippedMissing = 0
+        var firstProcessedFileName: String? = null
 
         for (item in items) {
-            val remaining = maxLength - currentLength
+            val remaining = if (maxLength == Long.MAX_VALUE) Long.MAX_VALUE else maxLength - currentLength
             val relativePath = item.relativePath.ifEmpty { getRelativePath(item.file, project) }
             val block = if (!item.isSnippet && isBinaryFile(item.file)) {
                 "File: $relativePath\n"
@@ -393,15 +411,18 @@ object MarkdownFormatter {
                 }
             }
 
-            if (currentLength + block.length > maxLength) {
+            if (block.length.toLong() > remaining) {
                 stoppedEarly = true
                 break
             }
+            if (firstProcessedFileName == null) {
+                firstProcessedFileName = item.file.name
+            }
             formattedContents.add(block)
-            currentLength += block.length
+            currentLength += block.length.toLong()
         }
 
         val finalContent = formattedContents.joinToString("\n\n---\n\n")
-        return ProcessResult(finalContent, formattedContents.size, stoppedEarly, skippedMissing)
+        return ProcessResult(finalContent, formattedContents.size, stoppedEarly, skippedMissing, firstProcessedFileName)
     }
 }

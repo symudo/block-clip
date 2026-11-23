@@ -79,7 +79,7 @@ export class ClipStackManager {
     }
   }
 
-  public async formatAll(): Promise<FormatAllResult> {
+  public async formatAll(maxLength?: number): Promise<FormatAllResult> {
     return this.store.formatAll(async (item, remainingBudget) => {
       const targetKey = normalizePathKey(item.uri.fsPath)
       const openDoc = vscode.workspace.textDocuments.find((d) => normalizePathKey(d.uri.fsPath) === targetKey)
@@ -89,6 +89,9 @@ export class ClipStackManager {
           return { status: 'too_large' }
         }
         return { status: 'ok', content: text }
+      }
+      if (item.uri.scheme === 'untitled') {
+        return { status: 'missing' }
       }
       try {
         const stat = await vscode.workspace.fs.stat(item.uri)
@@ -100,6 +103,6 @@ export class ClipStackManager {
       } catch {
         return { status: 'missing' }
       }
-    })
+    }, maxLength)
   }
 }

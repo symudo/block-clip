@@ -2,7 +2,7 @@
   "name": "block-clip",
   "displayName": "blockClip",
   "description": "%extension.description%",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "publisher": "yuchuan",
   "l10n": "./l10n",
   "license": "MIT",
@@ -134,43 +134,54 @@
       ],
       "editor/title/context": [
         {
-          "when": "resourceScheme == 'file'",
+          "when": "resourceScheme == 'file' || resourceScheme == 'untitled'",
           "command": "copy-code-with-path.copyCode",
           "group": "navigation@5"
         },
         {
-          "when": "resourceScheme == 'file'",
+          "when": "resourceScheme == 'file' || resourceScheme == 'untitled'",
           "submenu": "copy-code-with-path.stackSubmenu",
           "group": "navigation@6"
         }
       ],
       "editor/context": [
         {
-          "when": "resourceScheme == 'file' && editorHasSelection",
+          "when": "(resourceScheme == 'file' || resourceScheme == 'untitled') && editorHasSelection",
           "command": "copy-code-with-path.copySelection",
           "group": "9_cutcopypaste@99"
         },
         {
-          "when": "resourceScheme == 'file'",
+          "when": "resourceScheme == 'file' || resourceScheme == 'untitled'",
           "command": "copy-code-with-path.copyCode",
           "group": "9_cutcopypaste@100"
         },
         {
-          "when": "resourceScheme == 'file'",
+          "when": "resourceScheme == 'file' || resourceScheme == 'untitled'",
           "submenu": "copy-code-with-path.stackSubmenu",
           "group": "9_cutcopypaste@101"
         }
       ]
+    },
+    "configuration": {
+      "title": "BlockClip",
+      "properties": {
+        "blockClip.maxContentSizeMB": {
+          "type": "number",
+          "default": 50,
+          "minimum": 0,
+          "description": "%config.maxContentSizeMB.description%"
+        }
+      }
     }
   },
   "scripts": {
-    "vscode:prepublish": "pnpm run build",
+    "vscode:prepublish": "node esbuild.config.js --production",
     "build": "node esbuild.config.js",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "pnpm run compile && pnpm run check",
     "lint": "pnpm exec biome check",
-    "test": "pnpm run compile && node --test dist/test/*.test.js",
+    "test": "pnpm run compile && node --test out/test/*.test.js",
     "check": "pnpm exec biome check",
     "format": "pnpm exec biome format --write",
     "prepare": "simple-git-hooks",

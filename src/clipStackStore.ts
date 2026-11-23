@@ -19,6 +19,7 @@ export interface FormatAllResult {
   processedCount: number
   stoppedEarly: boolean
   skippedMissingCount: number
+  firstProcessedPath?: string
 }
 
 export class ClipStackStore<T extends StackEntry = StackEntry> {
@@ -73,6 +74,7 @@ export class ClipStackStore<T extends StackEntry = StackEntry> {
     let currentLength = 0
     let stoppedEarly = false
     let skippedMissingCount = 0
+    let firstProcessedPath: string | undefined
 
     for (const item of this.items) {
       let block: string
@@ -99,6 +101,9 @@ export class ClipStackStore<T extends StackEntry = StackEntry> {
         break
       }
 
+      if (!firstProcessedPath) {
+        firstProcessedPath = item.fsPath
+      }
       formattedBlocks.push(block)
       currentLength += block.length
     }
@@ -108,7 +113,8 @@ export class ClipStackStore<T extends StackEntry = StackEntry> {
       content: finalContent,
       processedCount: formattedBlocks.length,
       stoppedEarly,
-      skippedMissingCount
+      skippedMissingCount,
+      firstProcessedPath
     }
   }
 }
