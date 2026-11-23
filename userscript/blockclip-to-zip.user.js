@@ -1,82 +1,425 @@
 // ==UserScript==
-// @name         BlockClip to ZIP for Gemini & AI Studio
+// @name         BlockClip to ZIP for Gemini & AI Studio (丝滑无闪烁 Pro)
 // @namespace    https://github.com/symudo/block-clip
-// @version      2.1.2
-// @description  将 BlockClip 复制的代码还原为目录层级并打包为 ZIP（或单文件 Markdown 附件），支持粘贴自动打包、快捷键/右键一键直通、页内丝滑拖拽上传至 Gemini & AI Studio，全面兼容 Chrome/Edge/Firefox 与 Trusted Types
-// @author       symudo
-// @match        https://gemini.google.com/*
-// @match        https://aistudio.google.com/*
+// @version      3.1.1
+// @description  将 BlockClip 复制的代码还原为目录层级并打包为 ZIP（或单文件 Markdown 附件），内置原生流式 DEFLATE 压缩引擎(零CDN/彻底修复沙箱卡死)，融合【工具栏内嵌秒传】+【全程可视化进度 HUD】+【粘贴无闪烁/原生Input/自动兜底】+【聊天框自动转附件】+【侧边栏与面板上下自由拖动】，100% 兼容 Chrome/Edge/Firefox 与 Trusted Types
+// @author       symudo / Pro Enhanced
+// @license      MIT
+// @match        *://gemini.google.com/*
+// @match        *://aistudio.google.com/*
+// @match        *://ai.dev/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=gemini.google.com
-// @require      https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_getClipboard
+// @grant        GM.getClipboard
 // @grant        unsafeWindow
-// @run-at       document-end
+// @run-at       document-idle
 // @noframes
 // ==/UserScript==
 
 ;(() => {
-  // 防止在 iframe 中注入或重复初始化
   if (window.top !== window.self) return
-  if (document.getElementById('blockclip-to-zip-root')) return
 
   const HOST_ID = 'blockclip-to-zip-root'
-  const STORAGE_KEY = 'blockclip_to_zip_prefs_v2'
-  const LARGE_TEXT_THRESHOLD = 250 * 1024 // 250 KB 以上启用内存直通，避免 textarea 排版卡顿
+  const INLINE_BTN_ID = 'blockclip-paste-as-zip-btn'
+  if (document.getElementById(HOST_ID)) return
+
+  const STORAGE_KEY = 'blockclip_to_zip_prefs_v3'
+  const LARGE_TEXT_THRESHOLD = 250 * 1024
+  const SINGLE_FILE_INTERCEPT_MIN_CHARS = 4096
   const PREVIEW_CHAR_LIMIT = 2400
+  const SINGLE_MODE_VERIFY_MS = 850
+  const PRIMARY_TIMEOUT_MS = 1200
+  const FALLBACK_TIMEOUT_MS = 650
+  const POST_INJECT_CLEANUP_MS = 800
+  const SWEEP_MS = 2500
+  const OBSERVER_THROTTLE_MS = 250
+  const FAILED_SLOT_BASE_COOLDOWN_MS = 3000
+  const FAILED_SLOT_MAX_COOLDOWN_MS = 60000
+  const DRAG_THRESHOLD_PX = 5
+  const ZIP_MAX_ENTRIES = 65535
+  const ZIP_MAX_UINT32 = 0xffffffff
+
   const IS_GEMINI = location.hostname.includes('gemini.google.com')
-  const IS_AISTUDIO = location.hostname.includes('aistudio.google.com')
+  const IS_AISTUDIO = !IS_GEMINI
   const IS_FIREFOX = /firefox/i.test(navigator.userAgent)
 
+  const rawWin =
+    (typeof unsafeWindow !== 'undefined' && (unsafeWindow.wrappedJSObject || unsafeWindow)) ||
+    window.wrappedJSObject ||
+    window
+  const unwrap = (el) => (el?.wrappedJSObject ? el.wrappedJSObject : el)
   const SHARED_ENCODER = new TextEncoder()
 
-  /* ==========================================================================
-     1. 持久化配置管理（优先 GM 沙箱存储，降级 localStorage）
-     ========================================================================== */
+  const VALID_UPLOAD_MODES = new Set(['paste', 'input', 'auto'])
+  const VALID_EXPORT_MODES = new Set(['zip', 'single_md'])
 
   const DEFAULT_PREFS = {
+    uploadMode: 'paste',
+    exportMode: 'zip',
     autoPackOnPaste: true,
     skipBinaryPlaceholders: true,
     autoCloseAfterInject: true,
     autoInterceptChatPaste: false,
-    exportMode: 'zip', // 'zip' | 'single_md'
-    floatSide: 'right', // 'left' | 'right'
-    floatBottom: 88
+    sideTabTopPct: 56,
+    panelTopPct: 50,
+    floatingBtnTopPct: 78
+  }
+
+  function clampNumber(val, min, max, fallback) {
+    const n = Number(val)
+    if (!Number.isFinite(n)) return fallback
+    return Math.min(max, Math.max(min, n))
+  }
+
+  function sanitizePrefs(rawObj) {
+    const src = rawObj && typeof rawObj === 'object' && !Array.isArray(rawObj) ? rawObj : {}
+    return {
+      uploadMode: VALID_UPLOAD_MODES.has(src.uploadMode) ? src.uploadMode : DEFAULT_PREFS.uploadMode,
+      exportMode: VALID_EXPORT_MODES.has(src.exportMode) ? src.exportMode : DEFAULT_PREFS.exportMode,
+      autoPackOnPaste: typeof src.autoPackOnPaste === 'boolean' ? src.autoPackOnPaste : DEFAULT_PREFS.autoPackOnPaste,
+      skipBinaryPlaceholders:
+        typeof src.skipBinaryPlaceholders === 'boolean'
+          ? src.skipBinaryPlaceholders
+          : DEFAULT_PREFS.skipBinaryPlaceholders,
+      autoCloseAfterInject:
+        typeof src.autoCloseAfterInject === 'boolean' ? src.autoCloseAfterInject : DEFAULT_PREFS.autoCloseAfterInject,
+      autoInterceptChatPaste:
+        typeof src.autoInterceptChatPaste === 'boolean'
+          ? src.autoInterceptChatPaste
+          : DEFAULT_PREFS.autoInterceptChatPaste,
+      sideTabTopPct: clampNumber(src.sideTabTopPct, 5, 95, DEFAULT_PREFS.sideTabTopPct),
+      panelTopPct: clampNumber(src.panelTopPct, 5, 95, DEFAULT_PREFS.panelTopPct),
+      floatingBtnTopPct: clampNumber(src.floatingBtnTopPct, 5, 95, DEFAULT_PREFS.floatingBtnTopPct)
+    }
   }
 
   function loadPrefs() {
     try {
-      let raw = null
-      if (typeof GM_getValue === 'function') {
-        raw = GM_getValue(STORAGE_KEY, null)
-      }
-      if (!raw) {
-        raw = localStorage.getItem(STORAGE_KEY)
-      }
+      let raw = typeof GM_getValue === 'function' ? GM_getValue(STORAGE_KEY, null) : null
+      if (!raw) raw = localStorage.getItem(STORAGE_KEY)
       if (!raw) return { ...DEFAULT_PREFS }
       const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
-      return { ...DEFAULT_PREFS, ...parsed }
+      return sanitizePrefs(parsed)
     } catch {
       return { ...DEFAULT_PREFS }
     }
   }
 
-  function savePrefs(prefs) {
+  function savePrefs(p) {
     try {
-      const serialized = JSON.stringify(prefs)
-      if (typeof GM_setValue === 'function') {
-        GM_setValue(STORAGE_KEY, serialized)
-      } else {
-        localStorage.setItem(STORAGE_KEY, serialized)
+      const serialized = JSON.stringify(sanitizePrefs(p))
+      if (typeof GM_setValue === 'function') GM_setValue(STORAGE_KEY, serialized)
+      localStorage.setItem(STORAGE_KEY, serialized)
+    } catch {}
+  }
+
+  const prefs = loadPrefs()
+
+  const BOOL_PROPS = new Set(['disabled', 'checked', 'readOnly', 'hidden', 'multiple', 'selected'])
+
+  function safeEl(tag, props, ...children) {
+    const el = document.createElement(tag)
+    if (props) {
+      for (const [key, val] of Object.entries(props)) {
+        if (val === undefined || val === null) continue
+        if (key === 'className') el.className = val
+        else if (key === 'style' && typeof val === 'object') Object.assign(el.style, val)
+        else if (key === 'dataset' && typeof val === 'object') Object.assign(el.dataset, val)
+        else if (key.startsWith('on') && typeof val === 'function') el.addEventListener(key.slice(2).toLowerCase(), val)
+        else if (key === 'textContent') el.textContent = String(val)
+        else if (key === 'value') el.value = String(val)
+        else if (BOOL_PROPS.has(key)) el[key] = Boolean(val)
+        else el.setAttribute(key, String(val))
       }
-    } catch {
-      // 忽略隐私模式或配额异常
+    }
+    for (const child of children) {
+      if (child === undefined || child === null || child === false) continue
+      if (typeof child === 'string' || typeof child === 'number') {
+        el.appendChild(document.createTextNode(String(child)))
+      } else if (child instanceof Node) {
+        el.appendChild(child)
+      } else if (Array.isArray(child)) {
+        for (const item of child) {
+          if (item instanceof Node) el.appendChild(item)
+          else if (item !== undefined && item !== null && item !== false) {
+            el.appendChild(document.createTextNode(String(item)))
+          }
+        }
+      }
+    }
+    return el
+  }
+
+  function nextPaint() {
+    return new Promise((resolve) => {
+      let done = false
+      const finish = () => {
+        if (done) return
+        done = true
+        resolve()
+      }
+      const fallback = setTimeout(finish, 50)
+      requestAnimationFrame(() => {
+        clearTimeout(fallback)
+        setTimeout(finish, 0)
+      })
+    })
+  }
+
+  function encodeUtf8(str) {
+    return SHARED_ENCODER.encode(str)
+  }
+
+  function utf8ByteLength(str) {
+    if (!str) return 0
+    let bytes = 0
+    for (let i = 0; i < str.length; i++) {
+      const code = str.charCodeAt(i)
+      if (code < 0x80) {
+        bytes += 1
+      } else if (code < 0x800) {
+        bytes += 2
+      } else if (code >= 0xd800 && code <= 0xdbff && i + 1 < str.length) {
+        const next = str.charCodeAt(i + 1)
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          bytes += 4
+          i++
+        } else {
+          bytes += 3
+        }
+      } else {
+        bytes += 3
+      }
+    }
+    return bytes
+  }
+
+  function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+    const k = 1024
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1)
+    return `${parseFloat((bytes / k ** i).toFixed(2))} ${sizes[i]}`
+  }
+
+  function isVisibleOnce(el) {
+    if (!el || !el.isConnected) return false
+    const r = el.getBoundingClientRect()
+    if (r.width <= 0 || r.height <= 0) return false
+    try {
+      const cs = getComputedStyle(el)
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse') return false
+      if (parseFloat(cs.opacity) <= 0.01) return false
+    } catch {}
+    return true
+  }
+
+  function firstVisible(selectors, excludeSelector = null, root = document) {
+    for (const sel of selectors) {
+      const nodes = root.querySelectorAll(sel)
+      for (const node of nodes) {
+        if (excludeSelector && node.closest(excludeSelector)) continue
+        if (isVisibleOnce(node)) return node
+      }
+    }
+    return null
+  }
+
+  function lastVisible(selectors, excludeSelector = null, root = document) {
+    for (const sel of selectors) {
+      const nodes = root.querySelectorAll(sel)
+      for (let i = nodes.length - 1; i >= 0; i--) {
+        const node = nodes[i]
+        if (excludeSelector && node.closest(excludeSelector)) continue
+        if (isVisibleOnce(node)) return node
+      }
+    }
+    return null
+  }
+
+  function querySelectorAllDeep(selector, root = document, results = []) {
+    try {
+      const matched = root.querySelectorAll(selector)
+      for (const node of matched) results.push(node)
+    } catch {}
+    const all = root.querySelectorAll('*')
+    for (const el of all) {
+      if (el.id === HOST_ID) continue
+      if (el.shadowRoot) querySelectorAllDeep(selector, el.shadowRoot, results)
+    }
+    return results
+  }
+
+  const ADAPTERS = {
+    gemini: {
+      defaultStrategy: 'paste',
+      findEditor: () => {
+        const selectors = [
+          'div.ql-editor[role="textbox"]',
+          'rich-textarea div[contenteditable="true"]',
+          'div[contenteditable="true"][role="textbox"]'
+        ]
+        const active = document.activeElement
+        if (active && isVisibleOnce(active) && selectors.some((s) => active.matches?.(s))) return active
+        return lastVisible(selectors)
+      },
+      findSlot: () => {
+        const trailing = firstVisible(['.trailing-actions-wrapper', '.input-buttons-wrapper-right'])
+        if (trailing) return { parent: trailing, before: trailing.firstElementChild }
+        const leading = firstVisible(['.leading-actions-wrapper', '.leading-actions'])
+        if (leading) return { parent: leading, before: null }
+        const old = firstVisible(['.input-area-container .send-button-container'])
+        if (old) return { parent: old, before: old.firstElementChild }
+        return null
+      },
+      findUploadScope: (editor) => {
+        const explicit =
+          editor.closest('input-container') || editor.closest('.input-area-container') || editor.closest('form')
+        if (explicit) return explicit
+        let el = editor
+        for (let i = 0; i < 5 && el.parentElement; i++) {
+          if (el.parentElement === document.body || el.parentElement.tagName === 'MAIN') break
+          el = el.parentElement
+        }
+        return el || document.body
+      }
+    },
+    aistudio: {
+      defaultStrategy: 'paste',
+      findEditor: () => {
+        const selectors = [
+          'ms-prompt-box textarea',
+          'ms-prompt-input-wrapper textarea',
+          'footer ms-autosize-textarea textarea',
+          'textarea[aria-label="Enter a prompt"]',
+          'textarea[aria-label="Type something"]',
+          'textarea[formcontrolname="promptText"]',
+          'ms-prompt-box div[contenteditable="true"]',
+          'ms-chunk-input textarea'
+        ]
+        const active = document.activeElement
+        if (
+          active &&
+          isVisibleOnce(active) &&
+          !active.closest('ms-system-instructions') &&
+          selectors.some((s) => active.matches?.(s))
+        ) {
+          return active
+        }
+        return lastVisible(selectors, 'ms-system-instructions')
+      },
+      findSlot: () => {
+        const root = firstVisible(['ms-prompt-box', 'ms-prompt-input-wrapper']) || document
+        const runBtn = firstVisible(['ms-run-button', 'button.run-button[aria-label="Run"]'], null, root)
+        if (runBtn) {
+          const runWrapper = runBtn.closest('.button-wrapper') || runBtn
+          if (runWrapper.parentElement && isVisibleOnce(runWrapper.parentElement)) {
+            return { parent: runWrapper.parentElement, before: runWrapper }
+          }
+        }
+        const addMenu = firstVisible(['ms-add-chunk-menu'], null, root)
+        if (addMenu) {
+          const addWrapper = addMenu.closest('.button-wrapper') || addMenu
+          if (addWrapper.parentElement && isVisibleOnce(addWrapper.parentElement)) {
+            return { parent: addWrapper.parentElement, before: addWrapper }
+          }
+        }
+        const fallbackBar = firstVisible(
+          ['.actions-wrapper', '.right-side', '.prompt-input-wrapper-container'],
+          null,
+          root
+        )
+        if (fallbackBar) return { parent: fallbackBar, before: fallbackBar.lastElementChild }
+        return null
+      },
+      findUploadScope: (editor) =>
+        editor.closest('ms-prompt-box') ||
+        editor.closest('ms-prompt-input-wrapper') ||
+        editor.closest('ms-chunk-input') ||
+        editor.closest('footer') ||
+        editor.closest('ms-chunk-editor') ||
+        document.body
     }
   }
 
-  /* ==========================================================================
-     2. 核心解析、路径清洗与安全检测模块
-     ========================================================================== */
+  const SITE = IS_GEMINI ? ADAPTERS.gemini : ADAPTERS.aistudio
+  let preferredStrategy = SITE.defaultStrategy
+
+  function parseBgLuma(el) {
+    if (!el) return null
+    try {
+      const bg = getComputedStyle(el).backgroundColor
+      const m = bg.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+%?))?\s*\)/i)
+      if (m) {
+        let alpha = 1
+        if (m[4] !== undefined) {
+          alpha = m[4].endsWith('%') ? parseFloat(m[4]) / 100 : parseFloat(m[4])
+        }
+        if (alpha > 0.1) return 0.2126 * Number(m[1]) + 0.7152 * Number(m[2]) + 0.0722 * Number(m[3])
+      }
+    } catch {}
+    return null
+  }
+
+  function isPageDark() {
+    const root = document.documentElement
+    const body = document.body
+    for (const el of [body, root]) {
+      if (!el) continue
+      const cls = typeof el.className === 'string' ? el.className.toLowerCase().trim() : ''
+      if (cls) {
+        const tokens = cls.split(/\s+/)
+        if (tokens.includes('dark-theme') || tokens.includes('theme-dark') || tokens.includes('dark')) return true
+        if (tokens.includes('light-theme') || tokens.includes('theme-light')) return false
+      }
+      const dataTheme = (el.getAttribute('data-theme') || el.getAttribute('data-color-scheme') || '').toLowerCase()
+      if (dataTheme === 'dark') return true
+      if (dataTheme === 'light') return false
+    }
+    for (const el of [body, root]) {
+      if (!el) continue
+      try {
+        const cs = (getComputedStyle(el).colorScheme || '').trim().toLowerCase()
+        if (cs === 'dark') return true
+        if (cs === 'light') return false
+      } catch {}
+    }
+    for (const el of [body, root, document.querySelector('chat-app, ms-app, main')]) {
+      const luma = parseBgLuma(el)
+      if (luma !== null) return luma < 128
+    }
+    return Boolean(window.matchMedia?.('(prefers-color-scheme: dark)').matches)
+  }
+
+  async function readClipboardActive() {
+    let lastErr = null
+    if (typeof GM !== 'undefined' && typeof GM.getClipboard === 'function') {
+      try {
+        const res = await GM.getClipboard('text/plain')
+        if (typeof res === 'string') return res
+      } catch (err) {
+        lastErr = err
+      }
+    }
+    if (typeof GM_getClipboard === 'function') {
+      try {
+        const res = await GM_getClipboard('text/plain')
+        if (typeof res === 'string') return res
+      } catch (err) {
+        lastErr = err
+      }
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+      try {
+        return await navigator.clipboard.readText()
+      } catch (err) {
+        lastErr = err
+      }
+    }
+    throw lastErr || new DOMException('NO_CLIPBOARD_API', 'NotAllowedError')
+  }
 
   const FILE_HEADER_REGEX = /^File:\s*(.+?)(?:\s*\((lines?\s*[\d\s,-]+)\))?\s*$/i
   const FENCE_START_REGEX = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)$/
@@ -84,8 +427,6 @@
   function normalizePath(filePath) {
     if (!filePath) return ''
     let normalized = String(filePath).trim()
-
-    // 剥离成对的反引号或引号
     if (
       normalized.length >= 2 &&
       normalized[0] === normalized[normalized.length - 1] &&
@@ -93,38 +434,54 @@
     ) {
       normalized = normalized.slice(1, -1).trim()
     }
-
-    normalized = normalized.replace(/\\/g, '/')
-    // 剔除 Windows 盘符（如 C:/）
-    normalized = normalized.replace(/^[a-zA-Z]:\/+/, '')
-
+    normalized = normalized.replace(/\\/g, '/').replace(/^[a-zA-Z]:\/+/, '')
     const segments = []
     for (const rawSeg of normalized.split('/')) {
       const seg = rawSeg.trim()
       if (!seg || seg === '.') continue
       if (seg === '..') {
-        // 安全弹栈，杜绝 Zip Slip
         if (segments.length > 0) segments.pop()
         continue
       }
-      // 使用 Unicode 控制字符属性类 \p{Cc}，彻底规避 ESLint / Biome noControlCharactersInRegex 报错
       const cleaned = seg.replace(/[\p{Cc}<>:"|?*]/gu, '_')
-      if (cleaned && cleaned !== '.' && cleaned !== '..') {
-        segments.push(cleaned)
+      if (cleaned && cleaned !== '.' && cleaned !== '..') segments.push(cleaned)
+    }
+    return segments.join('/')
+  }
+
+  function estimateBlockClipForChat(text) {
+    if (!text || text.length < 24 || !/file:/i.test(text)) return { match: false, estimatedFiles: 0 }
+    const clean = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+    if (!/^ {0,3}(`{3,}|~{3,})/m.test(clean)) return { match: false, estimatedFiles: 0 }
+
+    const headerRe = /^File:\s*(.+?)(?:\s*\((lines?\s*[\d\s,-]+)\))?\s*$/gim
+    const uniquePaths = new Set()
+    let headerCount = 0
+    for (const m of clean.matchAll(headerRe)) {
+      headerCount++
+      const p = normalizePath(m[1])
+      if (p) uniquePaths.add(p)
+    }
+
+    if (headerCount >= 2 && uniquePaths.size >= 1) {
+      return { match: true, estimatedFiles: uniquePaths.size }
+    }
+
+    if (headerCount === 1 && uniquePaths.size === 1 && clean.length >= SINGLE_FILE_INTERCEPT_MIN_CHARS) {
+      const firstLine = clean.trimStart().split(/\r?\n/, 1)[0] || ''
+      if (FILE_HEADER_REGEX.test(firstLine)) {
+        return { match: true, estimatedFiles: 1 }
       }
     }
 
-    return segments.join('/')
+    return { match: false, estimatedFiles: 0 }
   }
 
   function parseBlockClipText(rawText) {
     if (!rawText || !rawText.trim()) return []
-
-    // 剔除首行可能携带的 UTF-8 BOM 并统一换行符
     const normalizedText = rawText.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
     const lines = normalizedText.split('\n')
     const results = []
-
     let currentFile = null
     let inCodeBlock = false
     let fenceEndRegex = null
@@ -138,7 +495,6 @@
         codeLines = []
         return
       }
-
       const cleanPath = normalizePath(currentFile.relativePath)
       if (cleanPath) {
         results.push({
@@ -149,34 +505,32 @@
           isBinary: Boolean(currentFile.isBinary)
         })
       }
-
       currentFile = null
       inCodeBlock = false
       fenceEndRegex = null
       codeLines = []
     }
 
+    function nextNonEmptyLine(startIdx) {
+      for (let j = startIdx; j < lines.length; j++) {
+        if (lines[j].trim() !== '') return lines[j]
+      }
+      return null
+    }
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]
-
       if (inCodeBlock) {
-        if (fenceEndRegex?.test(line)) {
-          finalizeCurrentFile()
-        } else {
-          codeLines.push(line)
-        }
+        if (fenceEndRegex?.test(line)) finalizeCurrentFile()
+        else codeLines.push(line)
         continue
       }
-
       const fileMatch = line.match(FILE_HEADER_REGEX)
       if (fileMatch) {
         if (currentFile) {
-          if (!currentFile.hasCodeBlock) {
-            currentFile.isBinary = true
-          }
+          if (!currentFile.hasCodeBlock) currentFile.isBinary = true
           finalizeCurrentFile()
         }
-
         currentFile = {
           relativePath: fileMatch[1].trim(),
           lineRange: fileMatch[2] ? fileMatch[2].trim() : undefined,
@@ -186,20 +540,14 @@
         }
         continue
       }
-
       if (currentFile) {
         const fenceMatch = line.match(FENCE_START_REGEX)
         if (fenceMatch) {
           const fenceStr = fenceMatch[1]
           const infoStr = (fenceMatch[2] || '').trim()
-          // CommonMark 规范：反引号围栏的 info string 不能包含反引号
-          if (fenceStr[0] === '`' && infoStr.includes('`')) {
-            continue
-          }
+          if (fenceStr[0] === '`' && infoStr.includes('`')) continue
           const fenceChar = fenceStr[0] === '`' ? '`' : '~'
-          const fenceLen = fenceStr.length
-          // 仅在进入代码块时预编译一次，限制最多 3 空格缩进，避免代码内缩进反引号误闭合
-          fenceEndRegex = new RegExp(`^ {0,3}${fenceChar}{${fenceLen},}\\s*$`)
+          fenceEndRegex = new RegExp(`^ {0,3}${fenceChar}{${fenceStr.length},}\\s*$`)
           const langToken = infoStr ? infoStr.split(/\s+/)[0] : 'plaintext'
           currentFile.language = langToken || 'plaintext'
           currentFile.hasCodeBlock = true
@@ -207,126 +555,143 @@
           codeLines = []
           continue
         }
-
         if (line.trim() === '---') {
+          const upcoming = nextNonEmptyLine(i + 1)
+          if (upcoming && FENCE_START_REGEX.test(upcoming)) continue
           currentFile.isBinary = true
           finalizeCurrentFile()
         }
       }
     }
-
     if (currentFile) {
-      if (!inCodeBlock && !currentFile.hasCodeBlock) {
-        currentFile.isBinary = true
-      }
+      if (!inCodeBlock && !currentFile.hasCodeBlock) currentFile.isBinary = true
       finalizeCurrentFile()
     }
-
     return results
   }
 
-  function looksLikeMultiFileBlockClip(text) {
-    if (!text || text.length < 24 || !text.includes('File:')) return false
-    const clean = text.replace(/^\uFEFF/, '')
-    const matches = clean.match(/^File:\s*.+$/gim)
-    if (!matches || matches.length < 2) return false
-    return /^ {0,3}(`{3,}|~{3,})/m.test(clean)
-  }
+  const HASH_COMMENT_EXACT = new Set([
+    'dockerfile',
+    'makefile',
+    'gnumakefile',
+    'jenkinsfile',
+    '.gitignore',
+    '.dockerignore',
+    '.env'
+  ])
+  const HASH_COMMENT_LANGS = new Set([
+    'py',
+    'pyi',
+    'python',
+    'sh',
+    'bash',
+    'zsh',
+    'fish',
+    'shell',
+    'yaml',
+    'yml',
+    'rb',
+    'ruby',
+    'pl',
+    'perl',
+    'r',
+    'toml',
+    'ini',
+    'conf',
+    'cfg',
+    'properties',
+    'ps1',
+    'powershell',
+    'tf',
+    'hcl',
+    'dockerfile',
+    'makefile'
+  ])
+  const HTML_COMMENT_LANGS = new Set(['html', 'htm', 'xml', 'svg', 'vue', 'svelte', 'md', 'markdown'])
+  const DASH_COMMENT_LANGS = new Set(['sql', 'lua', 'hs', 'haskell', 'elm'])
+  const BLOCK_COMMENT_LANGS = new Set(['css', 'scss', 'less'])
 
   function getCommentBlock(relativePath, language, commentText) {
     const baseName = (relativePath.split('/').pop() || '').toLowerCase()
     const dotIdx = baseName.lastIndexOf('.')
     const ext = dotIdx > 0 ? baseName.slice(dotIdx + 1) : ''
-    const lang = (language || '').toLowerCase()
+    const key = ext || (language || '').toLowerCase()
 
-    // 优先匹配无后缀特殊文件名
     if (
-      baseName === 'dockerfile' ||
+      HASH_COMMENT_EXACT.has(baseName) ||
       baseName.startsWith('dockerfile.') ||
-      baseName === 'makefile' ||
-      baseName === 'jenkinsfile' ||
-      baseName === '.gitignore' ||
-      baseName === '.dockerignore' ||
-      baseName === '.env' ||
-      baseName.startsWith('.env.')
+      baseName.startsWith('.env.') ||
+      HASH_COMMENT_LANGS.has(key)
     ) {
       return `# ==================== ${commentText} ====================`
     }
-
-    const key = ext || lang
-    switch (key) {
-      case 'py':
-      case 'pyi':
-      case 'python':
-      case 'sh':
-      case 'bash':
-      case 'zsh':
-      case 'fish':
-      case 'shell':
-      case 'yaml':
-      case 'yml':
-      case 'rb':
-      case 'ruby':
-      case 'pl':
-      case 'perl':
-      case 'r':
-      case 'toml':
-      case 'ini':
-      case 'conf':
-      case 'cfg':
-      case 'properties':
-      case 'ps1':
-      case 'powershell':
-      case 'tf':
-      case 'hcl':
-      case 'dockerfile':
-      case 'makefile':
-        return `# ==================== ${commentText} ====================`
-      case 'html':
-      case 'htm':
-      case 'xml':
-      case 'svg':
-      case 'vue':
-      case 'svelte':
-      case 'md':
-      case 'markdown':
-        return `<!-- ==================== ${commentText} ==================== -->`
-      case 'sql':
-      case 'lua':
-      case 'hs':
-      case 'haskell':
-      case 'elm':
-        return `-- ==================== ${commentText} ====================`
-      case 'css':
-      case 'scss':
-      case 'less':
-        return `/* ==================== ${commentText} ==================== */`
-      case 'bat':
-      case 'cmd':
-        return `REM ==================== ${commentText} ====================`
-      default:
-        return `// ==================== ${commentText} ====================`
-    }
+    if (HTML_COMMENT_LANGS.has(key)) return `<!-- ==================== ${commentText} ==================== -->`
+    if (DASH_COMMENT_LANGS.has(key)) return `-- ==================== ${commentText} ====================`
+    if (BLOCK_COMMENT_LANGS.has(key)) return `/* ==================== ${commentText} ==================== */`
+    if (key === 'bat' || key === 'cmd') return `REM ==================== ${commentText} ====================`
+    return `// ==================== ${commentText} ====================`
   }
+
+  const CODE_SOURCE_EXTS = new Set([
+    'ts',
+    'tsx',
+    'js',
+    'jsx',
+    'mjs',
+    'cjs',
+    'py',
+    'pyi',
+    'java',
+    'kt',
+    'kts',
+    'go',
+    'rs',
+    'c',
+    'cc',
+    'cpp',
+    'cxx',
+    'h',
+    'hh',
+    'hpp',
+    'cs',
+    'php',
+    'rb',
+    'swift',
+    'scala',
+    'dart',
+    'vue',
+    'svelte',
+    'astro',
+    'css',
+    'scss',
+    'sass',
+    'less',
+    'html',
+    'htm',
+    'md',
+    'markdown',
+    'sql'
+  ])
 
   function isSensitiveFile(relativePath) {
     const lower = relativePath.toLowerCase()
     const base = lower.split('/').pop() || ''
-    if (/^\.env(\..+)?$/.test(base)) {
-      if (/\.(example|sample|template|dist)$/.test(base)) return false
-      return true
-    }
-    if (/\.(pem|key|p12|pfx|jks|keystore)$/.test(base)) return true
-    if (/^(id_rsa|id_ed25519|id_ecdsa|id_dsa|\.npmrc|\.pypirc|\.netrc)$/.test(base)) return true
-    if (/(secret|credential|private[_-]?key)/.test(base) && !/(\.example|\.sample|\.mock|\.test\.)/.test(base)) {
-      return true
+    if (/^\.env(\..+)?$/.test(base)) return !/\.(example|sample|template|dist)$/.test(base)
+    if (/\.(pem|key|p12|pfx|jks|keystore|kdbx)$/.test(base)) return true
+    if (/^(id_rsa|id_ed25519|id_ecdsa|id_dsa|\.npmrc|\.pypirc|\.netrc|\.htpasswd)$/.test(base)) return true
+    if (
+      /(secret|credential|private[_-]?key)/.test(base) &&
+      !/(\.example|\.sample|\.template|\.mock|\.test\.|\.spec\.)/.test(base)
+    ) {
+      const dotIdx = base.lastIndexOf('.')
+      const ext = dotIdx > 0 ? base.slice(dotIdx + 1) : ''
+      if (!ext || !CODE_SOURCE_EXTS.has(ext)) return true
     }
     return false
   }
 
   function mergeParsedFiles(files) {
     const fileMap = new Map()
-
     for (const file of files) {
       if (!file.relativePath) continue
       const existing = fileMap.get(file.relativePath)
@@ -368,8 +733,9 @@
         const sections = []
         for (const snippet of data.snippets) {
           if (snippet.lineRange) {
-            const header = getCommentBlock(relativePath, data.language, `BlockClip Snippet (${snippet.lineRange})`)
-            sections.push(`${header}\n${snippet.content}`)
+            sections.push(
+              `${getCommentBlock(relativePath, data.language, `BlockClip Snippet (${snippet.lineRange})`)}\n${snippet.content}`
+            )
           } else {
             sections.push(snippet.content)
           }
@@ -381,7 +747,7 @@
         relativePath,
         language: data.language,
         content,
-        byteSize: SHARED_ENCODER.encode(content).byteLength,
+        byteSize: utf8ByteLength(content),
         isBinary: false,
         isSensitive: isSensitiveFile(relativePath),
         snippetsCount: data.snippets.length,
@@ -389,21 +755,26 @@
       })
     }
 
-    // 处理“同名文件与目录冲突”（例如同时存在 foo 和 foo/bar.ts）
     const dirPrefixes = new Set()
+    const usedPaths = new Set()
     for (const item of mergedList) {
+      usedPaths.add(item.relativePath)
       const parts = item.relativePath.split('/')
-      for (let i = 1; i < parts.length; i++) {
-        dirPrefixes.add(parts.slice(0, i).join('/'))
-      }
+      for (let i = 1; i < parts.length; i++) dirPrefixes.add(parts.slice(0, i).join('/'))
     }
     for (const item of mergedList) {
       if (dirPrefixes.has(item.relativePath)) {
-        item.relativePath = `${item.relativePath}_file`
+        usedPaths.delete(item.relativePath)
+        let candidate = `${item.relativePath}_file`
+        let seq = 2
+        while (dirPrefixes.has(candidate) || usedPaths.has(candidate)) {
+          candidate = `${item.relativePath}_file_${seq++}`
+        }
+        item.relativePath = candidate
+        usedPaths.add(candidate)
       }
     }
 
-    // 路径按层级自然排序（目录优先于同级文件）
     mergedList.sort((a, b) => {
       const aParts = a.relativePath.split('/')
       const bParts = b.relativePath.split('/')
@@ -421,11 +792,28 @@
     return mergedList
   }
 
-  function inferSmartFilename(files, ext) {
+  let lastStamp = ''
+  let sameSecondSeq = 0
+
+  function inferSmartFilename(files, ext, customName = '') {
     const now = new Date()
     const pad = (n) => String(n).padStart(2, '0')
     const datePart = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
     const timePart = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+    const stamp = `${datePart}_${timePart}`
+
+    if (stamp === lastStamp) sameSecondSeq += 1
+    else {
+      lastStamp = stamp
+      sameSecondSeq = 1
+    }
+    const timeStem = `${timePart}${sameSecondSeq > 1 ? `_${sameSecondSeq}` : ''}`
+
+    const cleanedCustom = String(customName || '')
+      .trim()
+      .replace(/[\\/:*?"<>|]/g, '_')
+      .replace(/\.(zip|md|txt)$/i, '')
+    if (cleanedCustom) return { name: `${cleanedCustom}.${ext}`, timeStem: '' }
 
     if (files.length > 0) {
       const topDirs = new Set()
@@ -440,34 +828,17 @@
       }
       if (allInSubdir && topDirs.size === 1) {
         const rootName = Array.from(topDirs)[0].replace(/[^a-zA-Z0-9._\u4e00-\u9fa5-]/g, '_')
-        if (rootName && rootName.length <= 40) {
-          return `${rootName}_${timePart}.${ext}`
-        }
+        if (rootName && rootName.length <= 40) return { name: `${rootName}_${timeStem}.${ext}`, timeStem }
       }
     }
-
-    return `blockclip_${datePart}_${timePart}.${ext}`
+    return { name: `blockclip_${datePart}_${timeStem}.${ext}`, timeStem }
   }
-
-  function formatBytes(bytes) {
-    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
-    const k = 1024
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1)
-    return `${parseFloat((bytes / k ** i).toFixed(2))} ${sizes[i]}`
-  }
-
-  /* ==========================================================================
-     3. 打包引擎（JSZip 主引擎 + 零依赖 STORE ZIP 兜底 + 单文件 Markdown 导出）
-     ========================================================================== */
 
   const CRC32_TABLE = (() => {
     const table = new Uint32Array(256)
     for (let i = 0; i < 256; i++) {
       let c = i
-      for (let j = 0; j < 8; j++) {
-        c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
-      }
+      for (let j = 0; j < 8; j++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
       table[i] = c >>> 0
     }
     return table
@@ -475,14 +846,42 @@
 
   function computeCrc32(bytes) {
     let crc = 0xffffffff
-    for (let i = 0; i < bytes.length; i++) {
-      crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8)
-    }
+    for (let i = 0; i < bytes.length; i++) crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8)
     return (crc ^ 0xffffffff) >>> 0
   }
 
-  // 零外部依赖标准 PKZIP (STORE + UTF-8 Flag 0x0800) 兜底生成器，防止 CDN 故障导致脚本瘫痪
-  function createFallbackStoreZipBlob(items) {
+  let deflateRawAvailable = typeof CompressionStream === 'function' && typeof Response === 'function'
+  let deflateEverSucceeded = false
+  let deflateConsecutiveFailures = 0
+
+  async function tryDeflateRaw(bytes) {
+    if (!deflateRawAvailable || bytes.length < 64) return null
+    let cs
+    try {
+      cs = new CompressionStream('deflate-raw')
+    } catch {
+      deflateRawAvailable = false
+      return null
+    }
+    try {
+      const stream = new Blob([bytes]).stream().pipeThrough(cs)
+      const buf = await new Response(stream).arrayBuffer()
+      const out = new Uint8Array(buf)
+      deflateEverSucceeded = true
+      deflateConsecutiveFailures = 0
+      return out.length > 0 && out.length < bytes.length ? out : null
+    } catch {
+      deflateConsecutiveFailures += 1
+      if (!deflateEverSucceeded && deflateConsecutiveFailures >= 3) deflateRawAvailable = false
+      return null
+    }
+  }
+
+  async function createNativeZipBlob(items, onProgress, shouldAbort) {
+    if (items.length > ZIP_MAX_ENTRIES) {
+      throw new Error(`文件数量超过标准 ZIP 上限 (${ZIP_MAX_ENTRIES})，请分批或切换为单文件 Markdown 模式。`)
+    }
+
     const now = new Date()
     const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)
     const dosDate = (Math.max(0, now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()
@@ -490,44 +889,65 @@
     const localChunks = []
     const centralChunks = []
     let offset = 0
+    let usedDeflate = false
+    const total = items.length || 1
+    let lastReportTs = 0
 
-    for (const item of items) {
-      const nameBytes = SHARED_ENCODER.encode(item.relativePath)
-      const dataBytes = SHARED_ENCODER.encode(item.isBinary && !item.content ? '' : item.content)
-      const crc = computeCrc32(dataBytes)
-      const size = dataBytes.length
+    for (let idx = 0; idx < items.length; idx++) {
+      if (shouldAbort?.()) return null
+      const item = items[idx]
+      const nameBytes = encodeUtf8(item.relativePath)
+      if (nameBytes.length > 0xffff) {
+        throw new Error(`文件路径过长，超过 ZIP 规范上限：${item.relativePath.slice(0, 60)}...`)
+      }
+      const rawBytes = encodeUtf8(item.isBinary && !item.content ? '' : item.content)
+      const crc = computeCrc32(rawBytes)
+      const uncompressedSize = rawBytes.length
+
+      const compressed = await tryDeflateRaw(rawBytes)
+      if (shouldAbort?.()) return null
+      const method = compressed ? 8 : 0
+      const payloadBytes = compressed || rawBytes
+      const compressedSize = payloadBytes.length
+      if (compressed) usedDeflate = true
       const nameLen = nameBytes.length
 
-      // Local File Header (30 bytes)
+      if (
+        uncompressedSize > ZIP_MAX_UINT32 ||
+        compressedSize > ZIP_MAX_UINT32 ||
+        offset > ZIP_MAX_UINT32 ||
+        offset + 30 + nameLen + compressedSize > ZIP_MAX_UINT32
+      ) {
+        throw new Error('压缩包体积超过标准 ZIP 4GB 上限。')
+      }
+
       const localHdr = new Uint8Array(30)
       const lv = new DataView(localHdr.buffer)
       lv.setUint32(0, 0x04034b50, true)
       lv.setUint16(4, 20, true)
-      lv.setUint16(6, 0x0800, true) // UTF-8
-      lv.setUint16(8, 0, true) // STORE
+      lv.setUint16(6, 0x0800, true)
+      lv.setUint16(8, method, true)
       lv.setUint16(10, dosTime, true)
       lv.setUint16(12, dosDate, true)
       lv.setUint32(14, crc, true)
-      lv.setUint32(18, size, true)
-      lv.setUint32(22, size, true)
+      lv.setUint32(18, compressedSize, true)
+      lv.setUint32(22, uncompressedSize, true)
       lv.setUint16(26, nameLen, true)
       lv.setUint16(28, 0, true)
+      localChunks.push(localHdr, nameBytes, payloadBytes)
 
-      localChunks.push(localHdr, nameBytes, dataBytes)
-
-      // Central Directory Header (46 bytes)
       const centralHdr = new Uint8Array(46)
       const cv = new DataView(centralHdr.buffer)
       cv.setUint32(0, 0x02014b50, true)
       cv.setUint16(4, 20, true)
       cv.setUint16(6, 20, true)
       cv.setUint16(8, 0x0800, true)
-      cv.setUint16(10, 0, true)
+      cv.setUint16(10, method, true)
       cv.setUint16(12, dosTime, true)
       cv.setUint16(14, dosDate, true)
       cv.setUint32(16, crc, true)
-      cv.setUint32(20, size, true)
-      cv.setUint32(24, size, true)
+      cv.setUint32(20, compressedSize, true)
+      cv.setUint32(24, uncompressedSize, true)
       cv.setUint16(28, nameLen, true)
       cv.setUint16(30, 0, true)
       cv.setUint16(32, 0, true)
@@ -535,15 +955,24 @@
       cv.setUint16(36, 0, true)
       cv.setUint32(38, 0, true)
       cv.setUint32(42, offset, true)
-
       centralChunks.push(centralHdr, nameBytes)
-      offset += 30 + nameLen + size
+
+      offset += 30 + nameLen + compressedSize
+
+      const nowTs = performance.now()
+      if (idx === items.length - 1 || nowTs - lastReportTs >= 35) {
+        lastReportTs = nowTs
+        if (typeof onProgress === 'function') onProgress(Math.round(((idx + 1) / total) * 100), item.relativePath)
+        if (idx < items.length - 1) await nextPaint()
+      }
     }
+
+    if (shouldAbort?.()) return null
 
     let centralSize = 0
     for (const chunk of centralChunks) centralSize += chunk.length
+    if (centralSize > ZIP_MAX_UINT32) throw new Error('ZIP 中央目录体积超过规范上限。')
 
-    // End of Central Directory (22 bytes)
     const eocd = new Uint8Array(22)
     const ev = new DataView(eocd.buffer)
     ev.setUint32(0, 0x06054b50, true)
@@ -555,7 +984,10 @@
     ev.setUint32(16, offset, true)
     ev.setUint16(20, 0, true)
 
-    return new Blob([...localChunks, ...centralChunks, eocd], { type: 'application/zip' })
+    return {
+      blob: new Blob([...localChunks, ...centralChunks, eocd], { type: 'application/zip' }),
+      engine: usedDeflate ? 'Native DEFLATE' : 'Native STORE'
+    }
   }
 
   function buildDirectoryTreeText(items) {
@@ -566,33 +998,27 @@
       for (let i = 0; i < parts.length; i++) {
         const part = parts[i]
         const isFile = i === parts.length - 1
-        if (!node.has(part)) {
-          node.set(part, isFile ? null : new Map())
-        }
+        if (!node.has(part)) node.set(part, isFile ? null : new Map())
         if (!isFile) {
           const next = node.get(part)
           if (next instanceof Map) node = next
         }
       }
     }
-
     const lines = []
     function walk(map, prefix) {
       const entries = Array.from(map.entries())
       entries.forEach(([name, child], idx) => {
         const isLast = idx === entries.length - 1
-        const connector = isLast ? '└── ' : '├── '
-        lines.push(`${prefix}${connector}${name}${child ? '/' : ''}`)
-        if (child) {
-          walk(child, prefix + (isLast ? '    ' : '│   '))
-        }
+        lines.push(`${prefix}${isLast ? '└── ' : '├── '}${name}${child ? '/' : ''}`)
+        if (child) walk(child, prefix + (isLast ? '    ' : '│   '))
       })
     }
     walk(root, '')
     return lines.join('\n')
   }
 
-  function createSingleMarkdownBlob(items) {
+  async function createSingleMarkdownBlob(items, onProgress, shouldAbort) {
     const parts = [
       '# BlockClip Project Bundle',
       '',
@@ -606,561 +1032,441 @@
       '## Files',
       ''
     ]
-
-    for (const item of items) {
-      parts.push(`### File: \`${item.relativePath}\``)
+    const total = items.length || 1
+    let lastReportTs = 0
+    for (let idx = 0; idx < items.length; idx++) {
+      if (shouldAbort?.()) return null
+      const item = items[idx]
+      const pathBackticks = item.relativePath.match(/`+/g)
+      let inlineTickLen = 1
+      if (pathBackticks) {
+        for (const m of pathBackticks) if (m.length >= inlineTickLen) inlineTickLen = m.length + 1
+      }
+      const inlineTicks = '`'.repeat(inlineTickLen)
+      parts.push(`### File: ${inlineTicks}${item.relativePath}${inlineTicks}`)
       if (item.isBinary && !item.content) {
         parts.push('_Binary file placeholder (empty)_', '')
-        continue
-      }
-      // 自动计算安全围栏长度，避免文件内容中的反引号冲突
-      const backtickMatches = item.content.match(/`{3,}/g)
-      let fenceLen = 3
-      if (backtickMatches) {
-        for (const m of backtickMatches) {
-          if (m.length >= fenceLen) fenceLen = m.length + 1
+      } else {
+        const backtickMatches = item.content.match(/`{3,}/g)
+        let fenceLen = 3
+        if (backtickMatches) {
+          for (const m of backtickMatches) if (m.length >= fenceLen) fenceLen = m.length + 1
         }
+        const fence = '`'.repeat(fenceLen)
+        const lang = item.language && item.language !== 'plaintext' ? item.language : ''
+        parts.push(`${fence}${lang}`, item.content, fence, '')
       }
-      const fence = '`'.repeat(fenceLen)
-      const lang = item.language && item.language !== 'plaintext' ? item.language : ''
-      parts.push(`${fence}${lang}`, item.content, fence, '')
+      const nowTs = performance.now()
+      if (idx === items.length - 1 || nowTs - lastReportTs >= 35) {
+        lastReportTs = nowTs
+        if (typeof onProgress === 'function') onProgress(Math.round(((idx + 1) / total) * 100), item.relativePath)
+        if (idx < items.length - 1) await nextPaint()
+      }
     }
-
+    if (shouldAbort?.()) return null
     return new Blob([parts.join('\n')], { type: 'text/markdown;charset=utf-8' })
   }
 
-  async function buildArtifact(items, exportMode, customName, onProgress) {
+  async function buildArtifact(items, exportMode, customName, onProgress, shouldAbort) {
     if (exportMode === 'single_md') {
-      const blob = createSingleMarkdownBlob(items)
-      const base = customName ? customName.replace(/\.(zip|md|txt)$/i, '') : null
-      const name = base ? `${base}.md` : inferSmartFilename(items, 'md')
+      const { name, timeStem } = inferSmartFilename(items, 'md', customName)
+      const blob = await createSingleMarkdownBlob(items, onProgress, shouldAbort)
+      if (!blob) return null
       const file = new File([blob], name, { type: 'text/markdown' })
-      return { blob, file, name, mime: 'text/markdown', engine: 'Markdown' }
+      return { blob, file, name, timeStem, mime: 'text/markdown', engine: 'Markdown' }
     }
-
-    const ZipCtor = typeof JSZip !== 'undefined' ? JSZip : typeof window !== 'undefined' ? window.JSZip : null
-    const base = customName ? customName.replace(/\.(zip|md|txt)$/i, '') : null
-    const name = base ? `${base}.zip` : inferSmartFilename(items, 'zip')
-
-    let blob
-    let engine = 'JSZip'
-
-    if (ZipCtor) {
-      const zip = new ZipCtor()
-      for (const item of items) {
-        zip.file(item.relativePath, item.isBinary && !item.content ? '' : item.content)
-      }
-      blob = await zip.generateAsync(
-        {
-          type: 'blob',
-          compression: 'DEFLATE',
-          compressionOptions: { level: 4 } // 兼顾速度与压缩率的甜蜜点
-        },
-        (meta) => {
-          if (typeof onProgress === 'function') {
-            onProgress(Math.round(meta.percent || 0))
-          }
-        }
-      )
-    } else {
-      engine = 'Built-in STORE'
-      blob = createFallbackStoreZipBlob(items)
-    }
-
+    const { name, timeStem } = inferSmartFilename(items, 'zip', customName)
+    const zipRes = await createNativeZipBlob(items, onProgress, shouldAbort)
+    if (!zipRes) return null
+    const { blob, engine } = zipRes
     const file = new File([blob], name, { type: 'application/zip' })
-    return { blob, file, name, mime: 'application/zip', engine }
+    return { blob, file, name, timeStem, mime: 'application/zip', engine }
   }
 
-  /* ==========================================================================
-     4. 零 innerHTML 安全 DOM 构建工具（100% 免疫 Trusted Types）
-     ========================================================================== */
+  let isDispatchingSynthetic = false
+  let busy = false
+  const activeDataTransfers = new Set()
+  const touchedFileInputs = new Set()
+  let cleanupTimer = null
 
-  const BOOL_PROPS = new Set(['disabled', 'checked', 'readOnly', 'hidden', 'multiple', 'draggable', 'selected'])
-
-  function safeEl(tag, props, ...children) {
-    const el = document.createElement(tag)
-    if (props) {
-      for (const [key, val] of Object.entries(props)) {
-        if (val === undefined || val === null) continue
-        if (key === 'className') {
-          el.className = val
-        } else if (key === 'style' && typeof val === 'object') {
-          Object.assign(el.style, val)
-        } else if (key.startsWith('on') && typeof val === 'function') {
-          el.addEventListener(key.slice(2).toLowerCase(), val)
-        } else if (key === 'textContent') {
-          el.textContent = String(val)
-        } else if (key === 'value') {
-          el.value = String(val)
-        } else if (BOOL_PROPS.has(key)) {
-          el[key] = Boolean(val)
-        } else {
-          el.setAttribute(key, String(val))
-        }
-      }
-    }
-
-    for (const child of children) {
-      if (child === undefined || child === null || child === false) continue
-      if (typeof child === 'string' || typeof child === 'number') {
-        el.appendChild(document.createTextNode(String(child)))
-      } else if (child instanceof Node) {
-        el.appendChild(child)
-      } else if (Array.isArray(child)) {
-        for (const item of child) {
-          if (item instanceof Node) {
-            el.appendChild(item)
-          } else if (item !== undefined && item !== null && item !== false) {
-            el.appendChild(document.createTextNode(String(item)))
-          }
-        }
-      }
-    }
-
-    return el
+  function trackDT(dt) {
+    if (dt) activeDataTransfers.add(dt)
+    return dt
   }
 
-  /* ==========================================================================
-     5. 多通道附件注入引擎（修复 Firefox Xray 跨沙箱 File 构造 + 三通道注入）
-     ========================================================================== */
-
-  const PAGE_WIN = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window.wrappedJSObject || window
-
-  const NEEDS_XRAY_BRIDGE = typeof cloneInto === 'function' && PAGE_WIN !== window
-
-  // 在 Firefox Xray 沙箱下，直接把原始字节数组克隆到页面空间并构造同域 File，
-  // 彻底避免 cloneInto(sandboxFile, PAGE_WIN) 因无法克隆 DOM 反射器而静默降级失效
-  async function createPageFile(file) {
-    if (!NEEDS_XRAY_BRIDGE || !PAGE_WIN.File || !PAGE_WIN.Uint8Array) {
-      return { file, rawFile: file, isPageSide: false }
+  function clearTrackedDataTransfers() {
+    for (const dt of activeDataTransfers) {
+      try {
+        dt.items?.clear?.()
+      } catch {}
+      try {
+        dt.clearData?.()
+      } catch {}
     }
+    activeDataTransfers.clear()
+  }
+
+  function clearSingleFileInput(input) {
+    if (!input) return
+    for (const [win, el] of [
+      [rawWin, unwrap(input)],
+      [window, input]
+    ]) {
+      try {
+        el.value = ''
+        if (el.files && el.files.length > 0) el.files = new win.DataTransfer().files
+      } catch {}
+    }
+  }
+
+  function cancelScheduledCleanup() {
+    if (cleanupTimer) {
+      clearTimeout(cleanupTimer)
+      cleanupTimer = null
+    }
+  }
+
+  function clearAllResiduals() {
+    cancelScheduledCleanup()
+    clearTrackedDataTransfers()
+    if (touchedFileInputs.size > 0) {
+      for (const inp of touchedFileInputs) clearSingleFileInput(inp)
+      touchedFileInputs.clear()
+    }
+  }
+
+  function scheduleCleanup(delayMs = POST_INJECT_CLEANUP_MS) {
+    cancelScheduledCleanup()
+    cleanupTimer = setTimeout(clearAllResiduals, delayMs)
+  }
+
+  function dispatchInputEventSafe(el) {
+    if (!el) return
+    try {
+      const opts = new rawWin.Object()
+      opts.bubbles = true
+      opts.composed = true
+      unwrap(el).dispatchEvent(new rawWin.Event('input', opts))
+      return
+    } catch {}
+    try {
+      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }))
+    } catch {}
+  }
+
+  function setNativeTextValue(el, nextValue) {
+    try {
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+      const desc = Object.getOwnPropertyDescriptor(proto, 'value')
+      if (desc && typeof desc.set === 'function') {
+        desc.set.call(el, nextValue)
+        return
+      }
+    } catch {}
+    el.value = nextValue
+  }
+
+  async function prepareBinaryPayload(file) {
+    const needPageFile = rawWin !== window && Boolean(rawWin.File && rawWin.Uint8Array)
+    if (!needPageFile) return { pageFile: file, rawFile: file, isPageSide: false }
     try {
       const srcBytes = new Uint8Array(await file.arrayBuffer())
-      let pageBytes
-      try {
-        pageBytes = cloneInto(srcBytes, PAGE_WIN)
-      } catch {
-        pageBytes = new PAGE_WIN.Uint8Array(srcBytes.length)
+      let pageBytes = null
+      if (typeof cloneInto === 'function') {
+        try {
+          pageBytes = cloneInto(srcBytes, rawWin)
+        } catch {}
+      }
+      if (!pageBytes) {
+        pageBytes = new rawWin.Uint8Array(srcBytes.length)
         pageBytes.set(srcBytes)
       }
-
-      const pageParts = new PAGE_WIN.Array()
-      pageParts.push(pageBytes)
-
-      const pageOpts = cloneInto(
-        {
-          type: file.type || '',
-          lastModified: file.lastModified || Date.now()
-        },
-        PAGE_WIN
-      )
-
-      const pageFile = new PAGE_WIN.File(pageParts, file.name, pageOpts)
-      return { file: pageFile, rawFile: file, isPageSide: true }
+      const parts = new rawWin.Array()
+      parts.push(pageBytes)
+      const opts = new rawWin.Object()
+      opts.type = file.type || 'application/octet-stream'
+      opts.lastModified = file.lastModified || Date.now()
+      const pageFile = new rawWin.File(parts, file.name, opts)
+      return { pageFile, rawFile: file, isPageSide: true }
     } catch {
-      return { file, rawFile: file, isPageSide: false }
+      return { pageFile: file, rawFile: file, isPageSide: false }
     }
   }
 
-  // 基于已预处理的同域 File 同步构建 DataTransfer，避免跨通道重复 arrayBuffer() 拷贝并保护观测窗口
-  function createPageDataTransferFromPrepared(prepared) {
-    if (prepared?.isPageSide && PAGE_WIN.DataTransfer) {
-      try {
-        const dt = new PAGE_WIN.DataTransfer()
-        dt.items.add(prepared.file)
-        return { dt, isPageSide: true }
-      } catch {
-        // 降级到当前上下文构造
+  function buildDataTransfer(win, fileForWin) {
+    const dt = trackDT(new win.DataTransfer())
+    dt.items.add(fileForWin)
+    return dt
+  }
+
+  function dispatchPasteEvent(target, prepared) {
+    if (!target) return false
+    const tryDispatch = (win, el, fileObj) => {
+      const dt = buildDataTransfer(win, fileObj)
+      const opts = new win.Object()
+      opts.bubbles = true
+      opts.cancelable = true
+      opts.composed = true
+      opts.clipboardData = dt
+
+      const evt = new win.ClipboardEvent('paste', opts)
+      if (!evt.clipboardData) {
+        try {
+          const desc = new win.Object()
+          desc.value = dt
+          desc.configurable = true
+          win.Object.defineProperty(evt, 'clipboardData', desc)
+        } catch {}
+      } else if (evt.clipboardData.files && evt.clipboardData.files.length === 0 && evt.clipboardData.items) {
+        try {
+          evt.clipboardData.items.add(fileObj)
+          trackDT(evt.clipboardData)
+        } catch {}
       }
-    }
-    const dt = new DataTransfer()
-    dt.items.add((prepared && (prepared.rawFile || prepared.file)) || prepared)
-    return { dt, isPageSide: false }
-  }
 
-  function createPageEvent(ctorName, type, initObj, usePageSide = true) {
-    if (usePageSide && NEEDS_XRAY_BRIDGE && PAGE_WIN[ctorName]) {
+      isDispatchingSynthetic = true
       try {
-        const clonedInit = cloneInto(initObj, PAGE_WIN, { wrapReflectors: true })
-        return { event: new PAGE_WIN[ctorName](type, clonedInit), isPageSide: true }
-      } catch {
-        // 降级到当前上下文构造
+        el.dispatchEvent(evt)
+      } finally {
+        isDispatchingSynthetic = false
       }
+      return true
     }
-    const Ctor = window[ctorName] || Event
-    return { event: new Ctor(type, initObj), isPageSide: false }
-  }
 
-  // 确保事件对象与派发目标严格同侧（避免 Firefox Xray 跨 compartment 静默拒绝）
-  function dispatchCompatEvent(target, eventObj, isPageSide) {
-    if (isPageSide && target && target.wrappedJSObject) {
-      try {
-        return target.wrappedJSObject.dispatchEvent(eventObj)
-      } catch {
-        // 降级到 Xray 包装对象派发
-      }
-    }
-    return target.dispatchEvent(eventObj)
-  }
-
-  function querySelectorLight(selector, root = document) {
     try {
-      return Array.from(root.querySelectorAll(selector))
+      if (prepared.isPageSide) return tryDispatch(rawWin, unwrap(target), prepared.pageFile)
+      return tryDispatch(window, target, prepared.rawFile)
     } catch {
-      return []
-    }
-  }
-
-  function querySelectorAllDeep(selector, root = document, results = []) {
-    try {
-      const matched = root.querySelectorAll(selector)
-      for (const node of matched) results.push(node)
-    } catch {
-      // 忽略非法选择器
-    }
-    const all = root.querySelectorAll('*')
-    for (const el of all) {
-      if (el.id === HOST_ID) continue
-      if (el.shadowRoot) {
-        querySelectorAllDeep(selector, el.shadowRoot, results)
+      try {
+        return tryDispatch(window, target, prepared.rawFile)
+      } catch {
+        return false
       }
     }
-    return results
-  }
-
-  function isElementVisible(el) {
-    if (!el || !el.isConnected) return false
-    const rect = el.getBoundingClientRect()
-    return rect.width > 0 && rect.height > 0
-  }
-
-  function findEditorElement() {
-    const selectors = IS_GEMINI
-      ? [
-          'rich-textarea .ql-editor[contenteditable="true"]',
-          'rich-textarea [contenteditable="true"]',
-          '[contenteditable="true"][role="textbox"]',
-          'rich-textarea',
-          'textarea'
-        ]
-      : IS_AISTUDIO
-        ? [
-            'ms-autosize-textarea textarea',
-            'textarea[aria-label]',
-            'textarea',
-            '[contenteditable="true"][role="textbox"]',
-            '[contenteditable="true"]'
-          ]
-        : ['[contenteditable="true"]', 'textarea']
-
-    // 优先 Light DOM 快速路径，避免长对话下全树扫描 Shadow DOM
-    for (const sel of selectors) {
-      const nodes = querySelectorLight(sel)
-      const visible = nodes.find(isElementVisible)
-      if (visible) return visible
-    }
-
-    for (const sel of selectors) {
-      const nodes = querySelectorAllDeep(sel)
-      const visible = nodes.find(isElementVisible)
-      if (visible) return visible
-      if (nodes[0]) return nodes[0]
-    }
-    return null
   }
 
   function isInputAcceptingFile(input, file) {
-    if (!input || input.disabled || input.webkitdirectory || input.hasAttribute('webkitdirectory')) {
-      return false
-    }
+    if (!input || input.disabled || input.webkitdirectory || input.hasAttribute('webkitdirectory')) return false
     const accept = (input.getAttribute('accept') || '').trim().toLowerCase()
     if (!accept || accept === '*' || accept === '*/*') return true
-
     const isZip = file.name.toLowerCase().endsWith('.zip') || file.type === 'application/zip'
-    const tokens = accept.split(',').map((t) => t.trim())
-    for (const t of tokens) {
-      if (t === '*/*') return true
+    for (const t of accept.split(',').map((s) => s.trim())) {
+      if (t === '*' || t === '*/*') return true
       if (isZip) {
         if (t === '.zip' || t === 'application/zip' || t === 'application/x-zip-compressed' || t === 'application/*') {
           return true
         }
-      } else {
-        if (t === '.md' || t === '.txt' || t === 'text/*' || t === 'text/plain' || t === 'text/markdown') {
-          return true
-        }
+      } else if (t === '.md' || t === '.txt' || t === 'text/*' || t === 'text/plain' || t === 'text/markdown') {
+        return true
       }
     }
     return false
   }
 
-  function findValidFileInputs(file) {
-    let inputs = querySelectorLight('input[type="file"]').filter((el) => isInputAcceptingFile(el, file))
-    if (inputs.length === 0) {
-      inputs = querySelectorAllDeep('input[type="file"]').filter((el) => isInputAcceptingFile(el, file))
-    }
-    // 优先排无 accept 限制的通用上传 input
-    inputs.sort((a, b) => {
-      const aAccept = a.getAttribute('accept') ? 1 : 0
-      const bAccept = b.getAttribute('accept') ? 1 : 0
-      return aAccept - bAccept
-    })
-    return inputs
-  }
+  const UPLOADER_HINT_SEL =
+    'input-container, .input-area-container, ms-prompt-box, ms-prompt-input-wrapper, ms-chunk-input, ms-chunk-editor, [class*="upload" i], [data-test-id*="upload" i]'
 
-  function findCandidateDropZones(customTarget) {
-    const list = []
-    if (customTarget && customTarget.nodeType === 1 && customTarget.isConnected) {
-      list.push(customTarget)
-    }
-
-    const siteSelectors = IS_GEMINI
-      ? [
-          '[xapfileselectordropzone]',
-          'xap-attachments-dropzone',
-          '.input-area-container',
-          '.text-input-field',
-          'rich-textarea',
-          'main'
-        ]
-      : IS_AISTUDIO
-        ? ['ms-prompt-input-wrapper', '.prompt-input-wrapper', 'ms-autosize-textarea', 'textarea', 'main']
-        : ['[contenteditable="true"]', 'textarea', 'main']
-
-    for (const sel of siteSelectors) {
-      const lightNodes = querySelectorLight(sel)
-      const best = lightNodes.find(isElementVisible) || lightNodes[0]
-      if (best && !list.includes(best)) {
-        list.push(best)
-      }
-    }
-
-    if (list.length === 0) {
-      for (const sel of siteSelectors) {
-        const nodes = querySelectorAllDeep(sel)
-        const best = nodes.find(isElementVisible) || nodes[0]
-        if (best && !list.includes(best)) {
-          list.push(best)
+  function findValidFileInputs(file, scope) {
+    const seen = new Set()
+    const scopedInputs = []
+    if (scope) {
+      for (const el of querySelectorAllDeep('input[type="file"]', scope)) {
+        if (!seen.has(el) && isInputAcceptingFile(el, file)) {
+          seen.add(el)
+          scopedInputs.push(el)
         }
       }
     }
-
-    const editor = findEditorElement()
-    if (editor && !list.includes(editor)) {
-      list.unshift(editor)
+    if (scopedInputs.length > 0) {
+      scopedInputs.sort((a, b) => (a.getAttribute('accept') ? 0 : 1) - (b.getAttribute('accept') ? 0 : 1))
+      return scopedInputs
     }
 
-    return list
+    const collectFallback = (candidates) => {
+      const matched = []
+      for (const el of candidates) {
+        if (seen.has(el) || !isInputAcceptingFile(el, file)) continue
+        const inRelevantContainer =
+          scope === document.body ||
+          Boolean(el.closest?.(UPLOADER_HINT_SEL)) ||
+          /upload|attach|file/i.test(`${el.name || ''} ${el.id || ''} ${el.getAttribute('aria-label') || ''}`)
+        if (!inRelevantContainer) continue
+        seen.add(el)
+        matched.push(el)
+      }
+      return matched
+    }
+
+    // 优先轻量直查 document，仅当未命中时再穿透 Shadow DOM，避免长对话页面全量遍历
+    let fallbackInputs = collectFallback(document.querySelectorAll('input[type="file"]'))
+    if (fallbackInputs.length === 0) {
+      fallbackInputs = collectFallback(querySelectorAllDeep('input[type="file"]', document))
+    }
+    fallbackInputs.sort((a, b) => (a.getAttribute('accept') ? 0 : 1) - (b.getAttribute('accept') ? 0 : 1))
+    return fallbackInputs
   }
 
-  function waitNextFrame(ms = 32) {
-    return new Promise((resolve) => {
-      requestAnimationFrame(() => setTimeout(resolve, ms))
-    })
+  function dispatchNativeFileInput(inputEl, prepared) {
+    if (!inputEl) return false
+    touchedFileInputs.add(inputEl)
+    const tryAssign = (win, el, fileObj) => {
+      const dt = buildDataTransfer(win, fileObj)
+      el.files = dt.files
+      for (const evType of ['input', 'change']) {
+        const opts = new win.Object()
+        opts.bubbles = true
+        opts.composed = true
+        el.dispatchEvent(new win.Event(evType, opts))
+      }
+      return true
+    }
+    try {
+      if (prepared.isPageSide) return tryAssign(rawWin, unwrap(inputEl), prepared.pageFile)
+      return tryAssign(window, inputEl, prepared.rawFile)
+    } catch {
+      try {
+        return tryAssign(window, inputEl, prepared.rawFile)
+      } catch {
+        return false
+      }
+    }
   }
 
-  function observePageReaction(actionFn, fileName, timeoutMs = 450) {
-    return new Promise((resolve) => {
-      let settled = false
-      let mutated = false
+  const PREVIEW_SEL = [
+    'uploader-file-preview',
+    '[data-test-id*="file-preview"]',
+    'ms-prompt-media',
+    'ms-file-chip',
+    'ms-media-chip',
+    'ms-chunk-media'
+  ].join(',')
 
-      const targetRoot = document.querySelector('main') || document.body
-      const observer = new MutationObserver((mutations) => {
+  function buildFileAttrSelector(fileName, timeStem) {
+    const parts = []
+    if (fileName) {
+      const escName = CSS.escape(fileName)
+      parts.push(`[title*="${escName}"]`, `[aria-label*="${escName}"]`)
+    }
+    if (timeStem && fileName && fileName.includes(timeStem)) {
+      const escTime = CSS.escape(timeStem)
+      parts.push(`[title*="${escTime}"]`, `[aria-label*="${escTime}"]`)
+    }
+    return parts.join(', ')
+  }
+
+  function countPreviewNodes(root) {
+    if (!root?.querySelectorAll) return 0
+    try {
+      return root.querySelectorAll(PREVIEW_SEL).length
+    } catch {
+      return 0
+    }
+  }
+
+  function isFileRenderedInDom(scope, fileName, timeStem) {
+    const effectiveStem = timeStem && fileName && fileName.includes(timeStem) ? timeStem : ''
+    const sText = scope ? scope.textContent || '' : ''
+    if ((fileName && sText.includes(fileName)) || (effectiveStem && sText.includes(effectiveStem))) return true
+    const sel = buildFileAttrSelector(fileName, effectiveStem)
+    if (!sel) return false
+    const searchRoot = scope || document
+    return Boolean(searchRoot.querySelector(sel))
+  }
+
+  function createAttachmentWatcher(scope, fileName, timeStem, timeoutMs, hostEl) {
+    const effectiveStem = timeStem && fileName && fileName.includes(timeStem) ? timeStem : ''
+    const existedBeforeDispatch = isFileRenderedInDom(scope, fileName, effectiveStem)
+    const beforePreviewCount = countPreviewNodes(scope || document.body)
+    const attrSel = buildFileAttrSelector(fileName, effectiveStem)
+
+    let settled = false
+    let obs = null
+    let timer = null
+    let resolveFn = null
+
+    const finish = (ok) => {
+      if (settled) return
+      settled = true
+      if (obs) {
+        obs.disconnect()
+        obs = null
+      }
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+      if (resolveFn) resolveFn(ok)
+    }
+
+    const isInsideHost = (node) =>
+      Boolean(hostEl && node && (node === hostEl || (node instanceof Node && hostEl.contains(node))))
+    const isInsideScope = (node) => Boolean(!scope || (node instanceof Node && scope.contains(node)))
+    const matchesText = (txt) =>
+      Boolean(txt && ((fileName && txt.includes(fileName)) || (effectiveStem && txt.includes(effectiveStem))))
+
+    const matchesAddedNode = (node) => {
+      if (!node || isInsideHost(node)) return false
+      if (node.nodeType === 3) return isInsideScope(node) && matchesText(node.nodeValue)
+      if (node.nodeType !== 1) return false
+
+      const inScope = isInsideScope(node)
+      const title = node.getAttribute?.('title') || ''
+      const label = node.getAttribute?.('aria-label') || ''
+      if (matchesText(title) || matchesText(label)) return true
+      if (attrSel && (node.matches?.(attrSel) || node.querySelector?.(attrSel))) return true
+
+      if (inScope) {
+        if (node.matches?.(PREVIEW_SEL) || node.querySelector?.(PREVIEW_SEL)) return true
+        if (node !== document.body && node.tagName !== 'MAIN' && matchesText(node.textContent)) return true
+      }
+      return false
+    }
+
+    const matchesMutatedTarget = (node) => {
+      if (!node || isInsideHost(node)) return false
+      if (node.nodeType === 3) return isInsideScope(node) && matchesText(node.nodeValue)
+      if (node.nodeType !== 1) return false
+      const title = node.getAttribute?.('title') || ''
+      const label = node.getAttribute?.('aria-label') || ''
+      return matchesText(title) || matchesText(label)
+    }
+
+    const promise = new Promise((resolve) => {
+      resolveFn = resolve
+
+      obs = new MutationObserver((mutations) => {
         for (const m of mutations) {
-          if (m.target && m.target.id === HOST_ID) continue
-          if (m.addedNodes && m.addedNodes.length > 0) {
+          if (isInsideHost(m.target)) continue
+          if (m.type === 'characterData' || m.type === 'attributes') {
+            if (matchesMutatedTarget(m.target)) return finish(true)
+          } else {
             for (const node of m.addedNodes) {
-              if (node.nodeType !== 1) continue
-              if (node.id === HOST_ID) continue
-              const text = (node.textContent || '') + ' ' + (node.getAttribute?.('aria-label') || '')
-              const cls = String(node.className || '').toLowerCase()
-              const tag = node.tagName.toLowerCase()
-              if (
-                text.includes(fileName) ||
-                cls.includes('file') ||
-                cls.includes('attach') ||
-                cls.includes('upload') ||
-                cls.includes('chip') ||
-                cls.includes('preview') ||
-                cls.includes('progress') ||
-                tag.includes('file') ||
-                tag.includes('attachment') ||
-                tag.includes('chip') ||
-                tag === 'mat-progress-bar' ||
-                tag === 'mat-spinner'
-              ) {
-                mutated = true
-                break
-              }
+              if (matchesAddedNode(node)) return finish(true)
             }
           }
-          if (mutated) break
-        }
-
-        if (mutated && !settled) {
-          settled = true
-          observer.disconnect()
-          clearTimeout(timer)
-          resolve(true)
         }
       })
 
-      try {
-        observer.observe(targetRoot, { childList: true, subtree: true })
-      } catch {
-        // 忽略观测失败
-      }
+      obs.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ['title', 'aria-label']
+      })
 
-      const timer = setTimeout(() => {
-        if (!settled) {
-          settled = true
-          observer.disconnect()
-          resolve(mutated)
-        }
+      timer = setTimeout(() => {
+        const previewIncreased = countPreviewNodes(scope || document.body) > beforePreviewCount
+        const renderedNow = !existedBeforeDispatch && isFileRenderedInDom(scope, fileName, effectiveStem)
+        finish(previewIncreased || renderedNow)
       }, timeoutMs)
-
-      Promise.resolve()
-        .then(actionFn)
-        .catch(() => {
-          // 交由定时器自然收尾
-        })
     })
+
+    return {
+      promise,
+      cancel: () => finish(false)
+    }
   }
-
-  async function dispatchDropSequence(zone, preparedFile) {
-    const { dt, isPageSide } = createPageDataTransferFromPrepared(preparedFile)
-    const init = { bubbles: true, cancelable: true, composed: true, dataTransfer: dt }
-
-    const enter = createPageEvent('DragEvent', 'dragenter', init, isPageSide)
-    dispatchCompatEvent(zone, enter.event, enter.isPageSide)
-    await waitNextFrame(24)
-
-    const over = createPageEvent('DragEvent', 'dragover', init, isPageSide)
-    dispatchCompatEvent(zone, over.event, over.isPageSide)
-    await waitNextFrame(24)
-
-    const drop = createPageEvent('DragEvent', 'drop', init, isPageSide)
-    dispatchCompatEvent(zone, drop.event, drop.isPageSide)
-    return Boolean(drop.event.defaultPrevented)
-  }
-
-  async function injectAttachmentToPage(file, customDropTarget = null) {
-    // 入口统一准备一次页面侧 File，后续所有通道零重复拷贝且不侵占 observePageReaction 计时窗口
-    const preparedFile = await createPageFile(file)
-
-    // 0. 若来自页内拖拽且有明确落点，优先在落点执行异步 Drop
-    if (customDropTarget && customDropTarget.nodeType === 1) {
-      let prevented = false
-      const verified = await observePageReaction(
-        async () => {
-          prevented = await dispatchDropSequence(customDropTarget, preparedFile)
-        },
-        file.name,
-        420
-      )
-      if (verified || prevented) {
-        return { ok: true, verified, method: 'drop-target' }
-      }
-    }
-
-    // 1. 通道 A：向编辑器派发 ClipboardEvent('paste')（240ms 快速回退，兼顾跟手与防重复上传）
-    const editor = findEditorElement()
-    if (editor) {
-      let pastePrevented = false
-      const verified = await observePageReaction(
-        () => {
-          try {
-            editor.focus({ preventScroll: true })
-          } catch {
-            // 忽略聚焦失败
-          }
-          const { dt, isPageSide } = createPageDataTransferFromPrepared(preparedFile)
-          const paste = createPageEvent(
-            'ClipboardEvent',
-            'paste',
-            {
-              bubbles: true,
-              cancelable: true,
-              composed: true,
-              clipboardData: dt
-            },
-            isPageSide
-          )
-          dispatchCompatEvent(editor, paste.event, paste.isPageSide)
-          pastePrevented = Boolean(paste.event.defaultPrevented)
-        },
-        file.name,
-        240
-      )
-      if (verified || pastePrevented) {
-        return { ok: true, verified, method: 'paste' }
-      }
-    }
-
-    // 2. 通道 B：已过滤的有效 input[type="file"]（严格同侧对齐赋值）
-    const validInputs = findValidFileInputs(file)
-    for (const input of validInputs) {
-      let assigned = false
-      let lastRawInput = input
-      const verified = await observePageReaction(
-        () => {
-          const { dt, isPageSide } = createPageDataTransferFromPrepared(preparedFile)
-          const rawInput = isPageSide && input.wrappedJSObject ? input.wrappedJSObject : input
-          lastRawInput = rawInput
-          try {
-            rawInput.files = dt.files
-          } catch {
-            if (rawInput !== input) {
-              input.files = dt.files
-              lastRawInput = input
-            }
-          }
-          assigned = Boolean(lastRawInput.files && lastRawInput.files.length > 0)
-          const inputEv = createPageEvent('Event', 'input', { bubbles: true, composed: true }, isPageSide)
-          const changeEv = createPageEvent('Event', 'change', { bubbles: true, composed: true }, isPageSide)
-          dispatchCompatEvent(input, inputEv.event, inputEv.isPageSide)
-          dispatchCompatEvent(input, changeEv.event, changeEv.isPageSide)
-        },
-        file.name,
-        450
-      )
-      if (verified) {
-        return { ok: true, verified: true, method: 'file-input' }
-      }
-      if (assigned && validInputs.length === 1) {
-        return { ok: true, verified: false, method: 'file-input' }
-      }
-      // 未触发有效上传且存在多个候选 input 时清理残留，避免影响后续通道
-      if (assigned && validInputs.length > 1) {
-        try {
-          lastRawInput.value = ''
-        } catch {
-          // 忽略清空异常
-        }
-      }
-    }
-
-    // 3. 通道 C：站点 dropzone 异步 Drag & Drop 序列
-    const dropZones = findCandidateDropZones(null)
-    for (const zone of dropZones) {
-      let prevented = false
-      const verified = await observePageReaction(
-        async () => {
-          prevented = await dispatchDropSequence(zone, preparedFile)
-        },
-        file.name,
-        420
-      )
-      if (verified || prevented) {
-        return { ok: true, verified, method: 'dropzone' }
-      }
-    }
-
-    return { ok: false, verified: false, method: 'none' }
-  }
-
-  /* ==========================================================================
-     6. Shadow DOM 样式系统（自适应深浅主题 + 顶层 z-index + 跨浏览器滚动条）
-     ========================================================================== */
 
   const CSS_TEXT = `
     :host {
@@ -1175,27 +1481,24 @@
       font-size: 13px;
       line-height: 1.5;
       color: var(--bc-text);
-      --bc-bg: rgba(24, 27, 34, 0.94);
-      --bc-surface: rgba(38, 43, 54, 0.85);
-      --bc-input-bg: rgba(14, 16, 22, 0.78);
+      --bc-bg: rgba(24, 27, 34, 0.96);
+      --bc-surface: rgba(38, 43, 54, 0.88);
+      --bc-input-bg: rgba(14, 16, 22, 0.82);
       --bc-border: rgba(255, 255, 255, 0.12);
       --bc-text: #e6edf3;
       --bc-text-dim: #9aa5b4;
       --bc-primary: #3b82f6;
       --bc-primary-hover: #2563eb;
-      --bc-accent: #10b981;
       --bc-warn-bg: rgba(245, 158, 11, 0.14);
       --bc-warn-border: rgba(245, 158, 11, 0.38);
       --bc-warn-text: #fbbf24;
-      --bc-danger: #ef4444;
       --bc-shadow: 0 14px 38px rgba(0, 0, 0, 0.52), 0 2px 10px rgba(0, 0, 0, 0.28);
       --bc-scroll-thumb: rgba(255, 255, 255, 0.22);
     }
-
     :host([data-theme="light"]) {
-      --bc-bg: rgba(255, 255, 255, 0.96);
-      --bc-surface: rgba(243, 246, 250, 0.92);
-      --bc-input-bg: rgba(248, 250, 252, 0.96);
+      --bc-bg: rgba(255, 255, 255, 0.97);
+      --bc-surface: rgba(243, 246, 250, 0.95);
+      --bc-input-bg: rgba(248, 250, 252, 0.98);
       --bc-border: rgba(15, 23, 42, 0.12);
       --bc-text: #0f172a;
       --bc-text-dim: #64748b;
@@ -1205,654 +1508,179 @@
       --bc-shadow: 0 14px 36px rgba(15, 23, 42, 0.18), 0 2px 10px rgba(15, 23, 42, 0.08);
       --bc-scroll-thumb: rgba(15, 23, 42, 0.22);
     }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--bc-scroll-thumb); border-radius: 999px; }
 
-    *, *::before, *::after {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
+    .bc-hud {
+      position: fixed; top: 18px; left: 50%; transform: translate(-50%, -18px);
+      width: min(410px, calc(100vw - 28px)); background: var(--bc-bg); color: var(--bc-text);
+      border: 1px solid var(--bc-border); border-radius: 12px; padding: 10px 14px;
+      box-shadow: var(--bc-shadow); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+      opacity: 0; visibility: hidden; pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.2s;
+      z-index: 2147483647; display: flex; flex-direction: column; gap: 6px;
     }
+    .bc-hud.show { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
+    .bc-hud[data-state="success"] { border-color: rgba(16, 185, 129, 0.5); }
+    .bc-hud[data-state="error"] { border-color: rgba(239, 68, 68, 0.55); }
+    .bc-hud[data-state="warn"] { border-color: rgba(245, 158, 11, 0.55); }
+    .bc-hud-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; font-weight: 600; }
+    .bc-hud-left { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+    .bc-hud-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bc-hud-pct { font-variant-numeric: tabular-nums; font-size: 11.5px; color: var(--bc-primary); flex-shrink: 0; }
+    .bc-hud[data-state="success"] .bc-hud-pct { color: #10b981; }
+    .bc-hud[data-state="error"] .bc-hud-pct { color: #ef4444; }
+    .bc-hud[data-state="warn"] .bc-hud-pct { color: #f59e0b; }
+    .bc-hud-sub { font-size: 11px; color: var(--bc-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bc-spinner {
+      width: 14px; height: 14px; border-radius: 50%;
+      border: 2px solid rgba(59, 130, 246, 0.25); border-top-color: #3b82f6;
+      animation: bcSpin 0.75s linear infinite; flex-shrink: 0;
+    }
+    @keyframes bcSpin { to { transform: rotate(360deg); } }
+    .bc-bar-track { width: 100%; height: 5px; border-radius: 999px; background: rgba(128, 128, 128, 0.22); overflow: hidden; }
+    .bc-bar-fill { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, #3b82f6, #60a5fa); transition: width 0.14s ease, background 0.2s ease; }
+    .bc-hud[data-state="success"] .bc-bar-fill { background: #10b981; }
+    .bc-hud[data-state="error"] .bc-bar-fill { background: #ef4444; }
+    .bc-hud[data-state="warn"] .bc-bar-fill { background: #f59e0b; }
 
-    /* 自定义细窄滚动条（Chromium） */
-    ::-webkit-scrollbar {
-      width: 6px;
-      height: 6px;
-    }
-    ::-webkit-scrollbar-track {
-      background: transparent;
-    }
-    ::-webkit-scrollbar-thumb {
-      background: var(--bc-scroll-thumb);
-      border-radius: 999px;
-    }
-
-    /* 独立置顶 Toast（面板收起时仍可见） */
-    .bc-toast {
-      position: fixed;
-      top: 16px;
-      left: 50%;
-      transform: translate(-50%, -14px);
-      padding: 8px 16px;
-      background: #10b981;
-      color: #fff;
-      font-size: 12px;
-      font-weight: 500;
-      border-radius: 999px;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.2s ease, transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
-      z-index: 2147483647;
-      max-width: min(520px, calc(100vw - 32px));
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .bc-toast.show {
-      opacity: 1;
-      transform: translate(-50%, 0);
-    }
-
-    /* 聊天框粘贴检测胶囊（非侵入式） */
     .bc-paste-pill {
-      position: fixed;
-      bottom: 24px;
-      left: 50%;
-      transform: translate(-50%, 16px);
-      background: var(--bc-bg);
-      color: var(--bc-text);
-      border: 1px solid var(--bc-border);
-      backdrop-filter: blur(14px);
-      -webkit-backdrop-filter: blur(14px);
-      border-radius: 999px;
-      padding: 7px 10px 7px 14px;
-      box-shadow: var(--bc-shadow);
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 12px;
-      opacity: 0;
-      visibility: hidden;
-      pointer-events: none;
-      transition: opacity 0.2s ease, transform 0.22s ease, visibility 0.2s;
-      z-index: 2147483646;
+      position: fixed; bottom: 24px; left: 50%; transform: translate(-50%, 16px);
+      background: var(--bc-bg); color: var(--bc-text); border: 1px solid var(--bc-border);
+      backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border-radius: 999px;
+      padding: 7px 10px 7px 14px; box-shadow: var(--bc-shadow); display: flex; align-items: center;
+      gap: 10px; font-size: 12px; opacity: 0; visibility: hidden; pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.22s ease, visibility 0.2s; z-index: 2147483646;
     }
-    .bc-paste-pill.show {
-      opacity: 1;
-      visibility: visible;
-      pointer-events: auto;
-      transform: translate(-50%, 0);
-    }
-    .bc-pill-btn {
-      border: none;
-      border-radius: 999px;
-      padding: 4px 10px;
-      background: var(--bc-primary);
-      color: #fff;
-      font-size: 11px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    .bc-pill-btn:hover {
-      background: var(--bc-primary-hover);
-    }
-    .bc-pill-close {
-      border: none;
-      background: transparent;
-      color: var(--bc-text-dim);
-      cursor: pointer;
-      padding: 2px 6px;
-      font-size: 13px;
-      border-radius: 50%;
-    }
-    .bc-pill-close:hover {
-      color: var(--bc-text);
-    }
+    .bc-paste-pill.show { opacity: 1; visibility: visible; pointer-events: auto; transform: translate(-50%, 0); }
+    .bc-pill-btn { border: none; border-radius: 999px; padding: 4px 10px; background: var(--bc-primary); color: #fff; font-size: 11px; font-weight: 600; cursor: pointer; }
+    .bc-pill-btn:hover { background: var(--bc-primary-hover); }
+    .bc-pill-close { border: none; background: transparent; color: var(--bc-text-dim); cursor: pointer; padding: 2px 6px; font-size: 13px; border-radius: 50%; }
+    .bc-pill-close:hover { color: var(--bc-text); }
 
-    /* 可拖动悬浮球 */
-    .bc-float-btn {
-      position: fixed;
-      width: 46px;
-      height: 46px;
-      border-radius: 50%;
-      background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
-      color: #fff;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: grab;
-      box-shadow: 0 4px 16px rgba(59, 130, 246, 0.42);
-      transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s ease, left 0.22s ease, right 0.22s ease;
-      user-select: none;
-      touch-action: none;
-      font-size: 20px;
-      border: 1px solid rgba(255, 255, 255, 0.25);
-      z-index: 2147483645;
-      outline: none;
+    .bc-side-tab {
+      position: fixed; right: 0; top: 56%; transform: translateY(-50%);
+      writing-mode: vertical-rl; padding: 11px 7px;
+      background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%); color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.22); border-right: none; border-radius: 8px 0 0 8px;
+      cursor: grab; font-size: 12.5px; font-weight: 600; letter-spacing: 2px;
+      box-shadow: -2px 4px 14px rgba(37, 99, 235, 0.34); user-select: none; touch-action: none;
+      line-height: 1.2; z-index: 2147483645;
+      transition: opacity 0.15s ease, transform 0.15s ease;
     }
-    .bc-float-btn.dragging {
-      cursor: grabbing;
-      transition: none;
-      transform: scale(1.06);
-    }
-    .bc-float-btn:hover:not(.dragging) {
-      transform: scale(1.08);
-      box-shadow: 0 6px 22px rgba(59, 130, 246, 0.62);
-    }
-    .bc-float-btn:active:not(.dragging) {
-      transform: scale(0.95);
-    }
+    .bc-side-tab:hover { opacity: 0.94; transform: translate(-2px, -50%); }
+    .bc-side-tab.dragging { cursor: grabbing; opacity: 0.96; transition: none; transform: translate(-2px, -50%); }
+    .bc-side-tab.hidden { display: none; }
 
-    /* 主面板 */
     .bc-panel {
-      position: fixed;
-      width: 450px;
-      max-width: calc(100vw - 24px);
-      background: var(--bc-bg);
-      backdrop-filter: blur(18px);
-      -webkit-backdrop-filter: blur(18px);
-      border: 1px solid var(--bc-border);
-      border-radius: 16px;
-      box-shadow: var(--bc-shadow);
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      transition: opacity 0.22s ease, transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.22s;
+      position: fixed; right: 16px; top: 50%; transform: translateY(-50%);
+      width: 445px; max-width: calc(100vw - 28px); max-height: calc(100vh - 36px);
+      background: var(--bc-bg); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+      border: 1px solid var(--bc-border); border-radius: 14px; box-shadow: var(--bc-shadow);
+      display: flex; flex-direction: column; overflow: hidden;
+      transition: opacity 0.2s ease, transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.2s;
       z-index: 2147483644;
     }
-    .bc-panel.hidden {
-      opacity: 0;
-      visibility: hidden;
-      transform: scale(0.93) translateY(10px);
-      pointer-events: none;
-    }
-    .bc-panel.dragging-ghost {
-      opacity: 0.16 !important;
-      pointer-events: none !important;
-    }
-
-    /* 标题栏 */
+    .bc-panel.dragging { transition: none; }
+    .bc-panel.hidden { opacity: 0; visibility: hidden; transform: translateY(-50%) scale(0.95); pointer-events: none; }
     .bc-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 11px 14px;
-      border-bottom: 1px solid var(--bc-border);
-      background: rgba(128, 128, 128, 0.05);
-      flex-shrink: 0;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 11px 14px; border-bottom: 1px solid var(--bc-border); background: rgba(128, 128, 128, 0.05); flex-shrink: 0;
+      cursor: grab; user-select: none; touch-action: none;
     }
-    .bc-title-wrap {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      min-width: 0;
-    }
-    .bc-title {
-      font-weight: 600;
-      font-size: 13.5px;
-      color: var(--bc-text);
-      white-space: nowrap;
-    }
-    .bc-tag {
-      font-size: 10px;
-      padding: 1px 6px;
-      background: rgba(59, 130, 246, 0.16);
-      color: #60a5fa;
-      border-radius: 4px;
-      border: 1px solid rgba(59, 130, 246, 0.3);
-      white-space: nowrap;
-    }
-    :host([data-theme="light"]) .bc-tag {
-      color: #2563eb;
-    }
-    .bc-actions {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
-    .bc-icon-btn {
-      background: transparent;
-      border: none;
-      color: var(--bc-text-dim);
-      padding: 4px 7px;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 13px;
-      transition: background 0.15s, color 0.15s;
-    }
-    .bc-icon-btn:hover {
-      background: rgba(128, 128, 128, 0.14);
-      color: var(--bc-text);
-    }
+    .bc-panel.dragging .bc-header { cursor: grabbing; }
+    .bc-title-wrap { display: flex; align-items: center; gap: 7px; min-width: 0; }
+    .bc-drag-hint { font-size: 11px; color: var(--bc-text-dim); opacity: 0.7; line-height: 1; }
+    .bc-title { font-weight: 600; font-size: 13.5px; color: var(--bc-text); white-space: nowrap; }
+    .bc-tag { font-size: 10px; padding: 1px 6px; background: rgba(59, 130, 246, 0.16); color: #60a5fa; border-radius: 4px; border: 1px solid rgba(59, 130, 246, 0.3); white-space: nowrap; }
+    :host([data-theme="light"]) .bc-tag { color: #2563eb; }
+    .bc-actions { display: flex; align-items: center; gap: 4px; }
+    .bc-icon-btn { background: transparent; border: none; color: var(--bc-text-dim); padding: 4px 7px; border-radius: 6px; cursor: pointer; font-size: 13px; transition: background 0.15s, color 0.15s; }
+    .bc-icon-btn:hover:not(:disabled) { background: rgba(128, 128, 128, 0.14); color: var(--bc-text); }
+    .bc-icon-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-    /* 主体区 */
-    .bc-body {
-      padding: 12px 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      overflow-y: auto;
-      scrollbar-width: thin;
-      scrollbar-color: var(--bc-scroll-thumb) transparent;
-    }
+    .bc-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--bc-scroll-thumb) transparent; }
+    .bc-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+    .bc-seg { display: inline-flex; background: var(--bc-surface); border: 1px solid var(--bc-border); border-radius: 8px; padding: 2px; gap: 2px; }
+    .bc-seg-btn { border: none; background: transparent; color: var(--bc-text-dim); padding: 3px 8px; font-size: 11px; font-weight: 500; border-radius: 6px; cursor: pointer; transition: all 0.15s; }
+    .bc-seg-btn.active { background: var(--bc-primary); color: #fff; }
+    .bc-seg-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .bc-quick-btn { border: 1px solid rgba(16, 185, 129, 0.42); background: rgba(16, 185, 129, 0.14); color: #10b981; border-radius: 7px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+    .bc-quick-btn:hover:not(:disabled) { background: rgba(16, 185, 129, 0.24); }
+    .bc-quick-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .bc-delivery-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 9px; border-radius: 8px; background: var(--bc-surface); border: 1px solid var(--bc-border); font-size: 11.5px; }
+    .bc-input-header { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--bc-text-dim); margin-bottom: 4px; }
+    .bc-paste-btn { color: #3b82f6; background: transparent; border: none; cursor: pointer; font-size: 11px; font-weight: 500; padding: 2px 4px; border-radius: 4px; }
+    .bc-paste-btn:hover:not(:disabled) { text-decoration: underline; }
+    .bc-paste-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .bc-large-badge { display: none; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; padding: 5px 9px; margin-bottom: 5px; border-radius: 6px; background: rgba(59, 130, 246, 0.14); border: 1px solid rgba(59, 130, 246, 0.3); color: #60a5fa; }
+    :host([data-theme="light"]) .bc-large-badge { color: #1d4ed8; }
+    .bc-textarea { width: 100%; height: 104px; background: var(--bc-input-bg); border: 1px solid var(--bc-border); border-radius: 8px; padding: 9px; color: var(--bc-text); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; resize: vertical; outline: none; transition: border-color 0.18s; scrollbar-width: thin; scrollbar-color: var(--bc-scroll-thumb) transparent; }
+    .bc-textarea:focus { border-color: var(--bc-primary); }
+    .bc-btn-primary { width: 100%; padding: 8px 14px; background: var(--bc-primary); border: none; border-radius: 8px; color: #fff; font-weight: 600; font-size: 12.5px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; transition: background 0.15s; }
+    .bc-btn-primary:hover:not(:disabled) { background: var(--bc-primary-hover); }
+    .bc-btn-primary:disabled { opacity: 0.65; cursor: not-allowed; }
 
-    /* 模式与快捷工具行 */
-    .bc-toolbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .bc-mode-switch {
-      display: inline-flex;
-      background: var(--bc-surface);
-      border: 1px solid var(--bc-border);
-      border-radius: 8px;
-      padding: 2px;
-      gap: 2px;
-    }
-    .bc-mode-btn {
-      border: none;
-      background: transparent;
-      color: var(--bc-text-dim);
-      padding: 3px 9px;
-      font-size: 11px;
-      font-weight: 500;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: all 0.15s;
-    }
-    .bc-mode-btn.active {
-      background: var(--bc-primary);
-      color: #fff;
-    }
+    .bc-inline-progress { display: none; flex-direction: column; gap: 5px; padding: 8px 10px; border-radius: 8px; background: var(--bc-surface); border: 1px solid var(--bc-border); }
+    .bc-inline-progress.show { display: flex; }
+    .bc-inline-progress-head { display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; font-weight: 500; gap: 8px; }
+    .bc-inline-progress-msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bc-inline-progress-pct { font-variant-numeric: tabular-nums; color: var(--bc-primary); flex-shrink: 0; }
 
-    .bc-quick-btn {
-      border: 1px solid rgba(16, 185, 129, 0.4);
-      background: rgba(16, 185, 129, 0.14);
-      color: #10b981;
-      border-radius: 7px;
-      padding: 4px 10px;
-      font-size: 11px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.15s;
-    }
-    .bc-quick-btn:hover {
-      background: rgba(16, 185, 129, 0.24);
-    }
+    .bc-alert { display: none; padding: 7px 10px; border-radius: 8px; font-size: 11px; background: var(--bc-warn-bg); border: 1px solid var(--bc-warn-border); color: var(--bc-warn-text); align-items: center; justify-content: space-between; gap: 8px; }
+    .bc-alert-btn { border: 1px solid currentColor; background: transparent; color: inherit; font-size: 10.5px; padding: 2px 7px; border-radius: 5px; cursor: pointer; flex-shrink: 0; }
+    .bc-alert-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .bc-result-box { padding: 11px; background: var(--bc-surface); border: 1px solid var(--bc-border); border-radius: 10px; display: none; flex-direction: column; gap: 9px; }
+    .bc-summary-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 600; }
+    .bc-stat-badge { color: #10b981; background: rgba(16, 185, 129, 0.14); border: 1px solid rgba(16, 185, 129, 0.32); padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
 
-    /* 输入区 */
-    .bc-input-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 11px;
-      color: var(--bc-text-dim);
-      margin-bottom: 4px;
-    }
-    .bc-paste-btn {
-      color: #3b82f6;
-      background: transparent;
-      border: none;
-      cursor: pointer;
-      font-size: 11px;
-      font-weight: 500;
-      padding: 2px 4px;
-      border-radius: 4px;
-    }
-    .bc-paste-btn:hover {
-      text-decoration: underline;
-    }
-    .bc-large-badge {
-      display: none;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      font-size: 11px;
-      padding: 5px 9px;
-      margin-bottom: 5px;
-      border-radius: 6px;
-      background: rgba(59, 130, 246, 0.14);
-      border: 1px solid rgba(59, 130, 246, 0.3);
-      color: #60a5fa;
-    }
-    :host([data-theme="light"]) .bc-large-badge {
-      color: #1d4ed8;
-    }
-    .bc-textarea {
-      width: 100%;
-      height: 100px;
-      background: var(--bc-input-bg);
-      border: 1px solid var(--bc-border);
-      border-radius: 8px;
-      padding: 9px;
-      color: var(--bc-text);
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 11px;
-      resize: vertical;
-      outline: none;
-      transition: border-color 0.18s;
-      scrollbar-width: thin;
-      scrollbar-color: var(--bc-scroll-thumb) transparent;
-    }
-    .bc-textarea:focus {
-      border-color: var(--bc-primary);
-    }
+    .bc-file-card { padding: 9px 11px; border-radius: 8px; border: 1px solid var(--bc-border); background: var(--bc-input-bg); display: flex; align-items: center; gap: 10px; }
+    .bc-file-card.dimmed { opacity: 0.45; pointer-events: none; }
+    .bc-file-icon { font-size: 22px; flex-shrink: 0; }
+    .bc-file-info { flex: 1; min-width: 0; }
+    .bc-name-input { width: 100%; background: transparent; border: 1px solid transparent; border-radius: 4px; color: var(--bc-text); font-size: 12.5px; font-weight: 600; padding: 2px 5px; margin-left: -5px; outline: none; text-overflow: ellipsis; }
+    .bc-name-input:hover { border-color: var(--bc-border); }
+    .bc-name-input:focus { background: var(--bc-surface); border-color: var(--bc-primary); }
+    .bc-file-desc { font-size: 11px; color: var(--bc-text-dim); margin-top: 1px; }
 
-    /* 主按钮 */
-    .bc-btn-primary {
-      width: 100%;
-      padding: 8px 14px;
-      background: var(--bc-primary);
-      border: none;
-      border-radius: 8px;
-      color: #fff;
-      font-weight: 600;
-      font-size: 12.5px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      transition: background 0.15s, transform 0.1s;
-    }
-    .bc-btn-primary:hover:not(:disabled) {
-      background: var(--bc-primary-hover);
-    }
-    .bc-btn-primary:active:not(:disabled) {
-      transform: scale(0.99);
-    }
-    .bc-btn-primary:disabled {
-      opacity: 0.65;
-      cursor: not-allowed;
-    }
+    .bc-button-group { display: flex; gap: 8px; }
+    .bc-btn-sub { flex: 1; padding: 7px 10px; border-radius: 7px; font-size: 12px; font-weight: 500; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 5px; transition: all 0.15s; border: 1px solid var(--bc-border); background: rgba(128, 128, 128, 0.08); color: var(--bc-text); }
+    .bc-btn-sub:hover:not(:disabled) { background: rgba(128, 128, 128, 0.16); }
+    .bc-btn-sub:disabled { opacity: 0.55; cursor: not-allowed; }
+    .bc-btn-inject { background: rgba(16, 185, 129, 0.18); border-color: rgba(16, 185, 129, 0.44); color: #10b981; font-weight: 600; }
+    .bc-btn-inject:hover:not(:disabled) { background: rgba(16, 185, 129, 0.28); }
 
-    /* 警告条 */
-    .bc-alert {
-      display: none;
-      padding: 7px 10px;
-      border-radius: 8px;
-      font-size: 11px;
-      background: var(--bc-warn-bg);
-      border: 1px solid var(--bc-warn-border);
-      color: var(--bc-warn-text);
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-    }
-    .bc-alert-btn {
-      border: 1px solid currentColor;
-      background: transparent;
-      color: inherit;
-      font-size: 10.5px;
-      padding: 2px 7px;
-      border-radius: 5px;
-      cursor: pointer;
-      flex-shrink: 0;
-    }
+    .bc-tree-toggle { font-size: 11px; color: var(--bc-text-dim); cursor: pointer; display: flex; align-items: center; justify-content: space-between; padding: 3px 0; user-select: none; }
+    .bc-tree-toggle:hover { color: var(--bc-text); }
+    .bc-tree-list { max-height: 155px; overflow-y: auto; background: var(--bc-input-bg); border: 1px solid var(--bc-border); border-radius: 6px; padding: 5px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; display: none; flex-direction: column; gap: 2px; scrollbar-width: thin; scrollbar-color: var(--bc-scroll-thumb) transparent; }
+    .bc-tree-item { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 2px 4px; border-radius: 4px; color: var(--bc-text); }
+    .bc-tree-item:hover { background: rgba(128, 128, 128, 0.1); }
+    .bc-tree-item.dimmed { opacity: 0.5; }
+    .bc-tree-left { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
+    .bc-tree-check { accent-color: var(--bc-primary); cursor: pointer; flex-shrink: 0; }
+    .bc-tree-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bc-tree-dir { color: var(--bc-text-dim); }
+    .bc-tree-badges { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+    .bc-tree-badge { font-size: 10px; color: var(--bc-text-dim); }
+    .bc-tree-warn { font-size: 9.5px; padding: 0 4px; border-radius: 3px; background: var(--bc-warn-bg); color: var(--bc-warn-text); border: 1px solid var(--bc-warn-border); }
 
-    /* 结果容器 */
-    .bc-result-box {
-      padding: 11px;
-      background: var(--bc-surface);
-      border: 1px solid var(--bc-border);
-      border-radius: 10px;
-      display: none;
-      flex-direction: column;
-      gap: 9px;
-      animation: bcFadeIn 0.2s ease;
-    }
-    @keyframes bcFadeIn {
-      from { opacity: 0; transform: translateY(4px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    .bc-summary-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 12px;
-      font-weight: 600;
-    }
-    .bc-stat-badge {
-      color: #10b981;
-      background: rgba(16, 185, 129, 0.14);
-      border: 1px solid rgba(16, 185, 129, 0.32);
-      padding: 1px 8px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 600;
-    }
-
-    /* 可拖拽卡片 */
-    .bc-drag-card {
-      padding: 11px 12px;
-      border-radius: 8px;
-      border: 1.5px dashed rgba(59, 130, 246, 0.55);
-      background: rgba(59, 130, 246, 0.08);
-      cursor: grab;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      transition: all 0.18s ease;
-      user-select: none;
-    }
-    .bc-drag-card:hover {
-      border-color: #60a5fa;
-      background: rgba(59, 130, 246, 0.15);
-    }
-    .bc-drag-card:active {
-      cursor: grabbing;
-    }
-    .bc-drag-icon {
-      font-size: 24px;
-      flex-shrink: 0;
-    }
-    .bc-drag-info {
-      flex: 1;
-      min-width: 0;
-    }
-    .bc-name-input {
-      width: 100%;
-      background: transparent;
-      border: 1px solid transparent;
-      border-radius: 4px;
-      color: var(--bc-text);
-      font-size: 12.5px;
-      font-weight: 600;
-      padding: 1px 4px;
-      margin-left: -4px;
-      outline: none;
-      text-overflow: ellipsis;
-      user-select: text;
-      cursor: text;
-    }
-    .bc-name-input:hover {
-      border-color: var(--bc-border);
-    }
-    .bc-name-input:focus {
-      background: var(--bc-input-bg);
-      border-color: var(--bc-primary);
-    }
-    .bc-drag-desc {
-      font-size: 11px;
-      color: var(--bc-text-dim);
-      margin-top: 2px;
-    }
-
-    /* 辅助按钮行 */
-    .bc-button-group {
-      display: flex;
-      gap: 8px;
-    }
-    .bc-btn-sub {
-      flex: 1;
-      padding: 7px 10px;
-      border-radius: 7px;
-      font-size: 12px;
-      font-weight: 500;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 5px;
-      transition: all 0.15s;
-      border: 1px solid var(--bc-border);
-      background: rgba(128, 128, 128, 0.08);
-      color: var(--bc-text);
-    }
-    .bc-btn-sub:hover:not(:disabled) {
-      background: rgba(128, 128, 128, 0.16);
-    }
-    .bc-btn-sub:disabled {
-      opacity: 0.55;
-      cursor: not-allowed;
-    }
-    .bc-btn-inject {
-      background: rgba(16, 185, 129, 0.18);
-      border-color: rgba(16, 185, 129, 0.42);
-      color: #10b981;
-      font-weight: 600;
-    }
-    .bc-btn-inject:hover:not(:disabled) {
-      background: rgba(16, 185, 129, 0.28);
-    }
-
-    /* 文件树列表 */
-    .bc-tree-toggle {
-      font-size: 11px;
-      color: var(--bc-text-dim);
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 3px 0;
-      user-select: none;
-    }
-    .bc-tree-toggle:hover {
-      color: var(--bc-text);
-    }
-    .bc-tree-list {
-      max-height: 155px;
-      overflow-y: auto;
-      background: var(--bc-input-bg);
-      border: 1px solid var(--bc-border);
-      border-radius: 6px;
-      padding: 5px 6px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 11px;
-      display: none;
-      flex-direction: column;
-      gap: 2px;
-      scrollbar-width: thin;
-      scrollbar-color: var(--bc-scroll-thumb) transparent;
-    }
-    .bc-tree-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 6px;
-      padding: 2px 4px;
-      border-radius: 4px;
-      color: var(--bc-text);
-    }
-    .bc-tree-item:hover {
-      background: rgba(128, 128, 128, 0.1);
-    }
-    .bc-tree-item.dimmed {
-      opacity: 0.52;
-    }
-    .bc-tree-left {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      min-width: 0;
-      flex: 1;
-    }
-    .bc-tree-check {
-      accent-color: var(--bc-primary);
-      cursor: pointer;
-      flex-shrink: 0;
-    }
-    .bc-tree-path {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .bc-tree-dir {
-      color: var(--bc-text-dim);
-    }
-    .bc-tree-badges {
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      flex-shrink: 0;
-    }
-    .bc-tree-badge {
-      font-size: 10px;
-      color: var(--bc-text-dim);
-    }
-    .bc-tree-warn {
-      font-size: 9.5px;
-      padding: 0 4px;
-      border-radius: 3px;
-      background: var(--bc-warn-bg);
-      color: var(--bc-warn-text);
-      border: 1px solid var(--bc-warn-border);
-    }
-
-    /* 设置抽屉 */
-    .bc-settings {
-      display: none;
-      flex-direction: column;
-      gap: 6px;
-      padding: 9px 10px;
-      background: var(--bc-surface);
-      border: 1px solid var(--bc-border);
-      border-radius: 8px;
-      font-size: 11.5px;
-    }
-    .bc-settings.open {
-      display: flex;
-    }
-    .bc-setting-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      cursor: pointer;
-      user-select: none;
-      color: var(--bc-text);
-    }
-    .bc-setting-row input {
-      accent-color: var(--bc-primary);
-      cursor: pointer;
-    }
-    .bc-footer-hint {
-      font-size: 10.5px;
-      color: var(--bc-text-dim);
-      text-align: center;
-      padding-top: 2px;
-    }
+    .bc-settings { display: none; flex-direction: column; gap: 6px; padding: 9px 10px; background: var(--bc-surface); border: 1px solid var(--bc-border); border-radius: 8px; font-size: 11.5px; }
+    .bc-settings.open { display: flex; }
+    .bc-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; user-select: none; color: var(--bc-text); }
+    .bc-setting-row input { accent-color: var(--bc-primary); cursor: pointer; }
+    .bc-footer-hint { font-size: 10.5px; color: var(--bc-text-dim); text-align: center; padding-top: 2px; }
   `
 
-  /* ==========================================================================
-     7. 主应用控制器
-     ========================================================================== */
-
-  function initApp() {
+  function boot() {
     if (document.getElementById(HOST_ID)) return
-
-    const prefs = loadPrefs()
 
     const hostEl = document.createElement('div')
     hostEl.id = HOST_ID
     ;(document.body || document.documentElement).appendChild(hostEl)
 
     const shadow = hostEl.attachShadow({ mode: 'open' })
-
-    // 优先 adoptedStyleSheets，不支持时降级为 textContent <style>（均 100% 合规 Trusted Types）
     try {
       if ('adoptedStyleSheets' in shadow && typeof CSSStyleSheet === 'function') {
         const sheet = new CSSStyleSheet()
@@ -1867,27 +1695,10 @@
       shadow.appendChild(styleEl)
     }
 
-    // 主题自动适配（跟随页面背景色亮度与系统偏好，节流防抖避免频繁重排）
     let themeRafId = 0
     function syncTheme() {
-      let nextTheme = 'dark'
-      try {
-        const bg = getComputedStyle(document.body).backgroundColor
-        const match = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/)
-        if (match) {
-          const lum = 0.299 * Number(match[1]) + 0.587 * Number(match[2]) + 0.114 * Number(match[3])
-          nextTheme = lum > 155 ? 'light' : 'dark'
-        } else if (window.matchMedia?.('(prefers-color-scheme: light)').matches) {
-          nextTheme = 'light'
-        }
-      } catch {
-        if (window.matchMedia?.('(prefers-color-scheme: light)').matches) {
-          nextTheme = 'light'
-        }
-      }
-      if (hostEl.getAttribute('data-theme') !== nextTheme) {
-        hostEl.setAttribute('data-theme', nextTheme)
-      }
+      const nextTheme = isPageDark() ? 'dark' : 'light'
+      if (hostEl.getAttribute('data-theme') !== nextTheme) hostEl.setAttribute('data-theme', nextTheme)
     }
     function scheduleSyncTheme() {
       if (themeRafId) return
@@ -1898,42 +1709,26 @@
     }
     syncTheme()
 
-    // SPA DOM 保活（防止 Angular 极端重渲染移除宿主容器，并限制属性监听范围减少无效触发）
-    const keepAliveObserver = new MutationObserver(() => {
-      if (!hostEl.isConnected) {
-        ;(document.body || document.documentElement).appendChild(hostEl)
-      }
-      scheduleSyncTheme()
-    })
-    keepAliveObserver.observe(document.documentElement, {
-      childList: true,
-      subtree: false,
-      attributes: true,
-      attributeFilter: ['class', 'style', 'data-theme']
-    })
-    if (document.body) {
-      keepAliveObserver.observe(document.body, {
-        childList: true,
-        attributes: true,
-        attributeFilter: ['class', 'style', 'data-theme']
-      })
-    }
-
-    // 核心状态
     let isOpen = false
-    let isDraggingCard = false
     let isTreeExpanded = false
-    let rawTextMemory = null // 大文本内存直通区
+    let rawTextMemory = null
     let parsedFiles = []
-    let currentArtifact = null // { blob, file, name, mime, engine }
+    let currentArtifact = null
     let currentArtifactUrl = null
     let customFileName = ''
-    let taskId = 0
-    let toastTimer = null
+    let outerBusy = false
+    let innerBusy = false
+    let repackToken = 0
     let repackTimer = null
+    let hudHideTimer = null
     let pastePillTimer = null
     let pendingChatPasteText = ''
     let pendingChatPasteTarget = null
+
+    let cachedInlineBtn = null
+    let failedSlotParent = null
+    let failedSlotAt = 0
+    let failedSlotCount = 0
 
     function revokeCurrentUrl() {
       if (currentArtifactUrl) {
@@ -1942,101 +1737,177 @@
       }
     }
 
-    function resetArtifactState() {
-      taskId++
-      clearTimeout(repackTimer)
-      revokeCurrentUrl()
-      currentArtifact = null
-      parsedFiles = []
-      customFileName = ''
-      resultContainer.style.display = 'none'
-      sensitiveAlertEl.style.display = 'none'
-      geminiLimitAlertEl.style.display = 'none'
+    function applyVerticalCenterPosition(el, pct, marginPx = 12) {
+      if (!el) return pct
+      const vh = window.innerHeight || document.documentElement.clientHeight || 800
+      const h = el.offsetHeight || el.getBoundingClientRect().height
+      const halfH = h > 0 ? h / 2 : 36
+      const minCenter = Math.min(vh / 2, halfH + marginPx)
+      const maxCenter = Math.max(vh / 2, vh - halfH - marginPx)
+      const desired = (pct / 100) * vh
+      const clampedPx = Math.min(maxCenter, Math.max(minCenter, desired))
+      el.style.top = `${Math.round(clampedPx)}px`
+      return Number(((clampedPx / vh) * 100).toFixed(2))
     }
 
-    function getActiveRawText() {
-      return rawTextMemory !== null ? rawTextMemory : textareaEl.value
-    }
+    function attachVerticalDrag(handleEl, targetEl, prefKey, options = {}) {
+      const { ignoreSelector = null, marginPx = 12, onDragEnd = null } = options
+      let pointerId = null
+      let startY = 0
+      let startCenterY = 0
+      let dragged = false
 
-    function setRawText(text) {
-      if (text.length >= LARGE_TEXT_THRESHOLD) {
-        rawTextMemory = text
-        const byteSize = SHARED_ENCODER.encode(text).byteLength
-        textareaEl.value = `${text.slice(0, PREVIEW_CHAR_LIMIT)}\n\n... [大文本内存直通预览，共 ${formatBytes(
-          byteSize
-        )}，已省略后续渲染以防卡顿] ...`
-        largeTextLabel.textContent = `⚡ 已内存加载大文本 (${formatBytes(byteSize)})，60fps 零卡顿`
-        largeBadgeEl.style.display = 'flex'
-      } else {
-        rawTextMemory = null
-        textareaEl.value = text
-        largeBadgeEl.style.display = 'none'
-      }
-    }
+      handleEl.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0 && e.pointerType === 'mouse') return
+        if (ignoreSelector && e.target?.closest?.(ignoreSelector)) return
+        pointerId = e.pointerId
+        startY = e.clientY
+        const rect = targetEl.getBoundingClientRect()
+        startCenterY = rect.top + rect.height / 2
+        dragged = false
+        try {
+          handleEl.setPointerCapture(pointerId)
+        } catch {}
+      })
 
-    // 尝试安全移除用户刚刚粘贴进聊天框的原始 BlockClip 文本（避免正文和附件重复）
-    function tryRemovePastedTextFromTarget(target, pastedText) {
-      if (!target || !target.isConnected || !pastedText) return
-      try {
-        if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') {
-          const val = target.value || ''
-          const normalizedPasted = pastedText.replace(/\r\n?/g, '\n')
-          let idx = val.lastIndexOf(pastedText)
-          let matchLen = pastedText.length
-          if (idx === -1) {
-            idx = val.lastIndexOf(normalizedPasted)
-            matchLen = normalizedPasted.length
-          }
-          if (idx !== -1) {
-            target.value = val.slice(0, idx) + val.slice(idx + matchLen)
-            const ev = createPageEvent('Event', 'input', { bubbles: true, composed: true }, NEEDS_XRAY_BRIDGE)
-            dispatchCompatEvent(target, ev.event, ev.isPageSide)
-          }
-          return
+      handleEl.addEventListener('pointermove', (e) => {
+        if (pointerId === null || e.pointerId !== pointerId) return
+        const dy = e.clientY - startY
+        if (!dragged && Math.abs(dy) >= DRAG_THRESHOLD_PX) {
+          dragged = true
+          targetEl.classList.add('dragging')
         }
+        if (!dragged) return
+        e.preventDefault()
+        const vh = window.innerHeight || document.documentElement.clientHeight || 800
+        const h = targetEl.offsetHeight || targetEl.getBoundingClientRect().height
+        const halfH = h > 0 ? h / 2 : 36
+        const minCenter = Math.min(vh / 2, halfH + marginPx)
+        const maxCenter = Math.max(vh / 2, vh - halfH - marginPx)
+        const nextCenter = Math.min(maxCenter, Math.max(minCenter, startCenterY + dy))
+        targetEl.style.top = `${Math.round(nextCenter)}px`
+        prefs[prefKey] = Number(((nextCenter / vh) * 100).toFixed(2))
+      })
 
-        const editable =
-          target.closest?.('[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]') ||
-          (target.isContentEditable ? target : null)
-        if (editable) {
-          const curNorm = (editable.innerText || editable.textContent || '').replace(/\r\n?/g, '\n').trim()
-          const pastedNorm = pastedText.replace(/\r\n?/g, '\n').trim()
-          // Quill 等富文本编辑器常会增删空行段落，折叠空白做二次比对，同时杜绝误删用户已有提示词
-          const curCompact = curNorm.replace(/\s+/g, '')
-          const pastedCompact = pastedNorm.replace(/\s+/g, '')
-          if (curNorm && (curNorm === pastedNorm || (curCompact && curCompact === pastedCompact))) {
-            editable.focus({ preventScroll: true })
-            const sel = window.getSelection()
-            if (sel) {
-              const range = document.createRange()
-              range.selectNodeContents(editable)
-              sel.removeAllRanges()
-              sel.addRange(range)
-            }
-            if (!document.execCommand?.('delete')) {
-              editable.textContent = ''
-              const ev = createPageEvent('Event', 'input', { bubbles: true, composed: true }, NEEDS_XRAY_BRIDGE)
-              dispatchCompatEvent(editable, ev.event, ev.isPageSide)
-            }
+      const finishDrag = (e) => {
+        if (pointerId === null || e.pointerId !== pointerId) return
+        try {
+          if (handleEl.hasPointerCapture?.(pointerId)) {
+            handleEl.releasePointerCapture(pointerId)
           }
+        } catch {}
+        pointerId = null
+        if (dragged) {
+          targetEl.classList.remove('dragging')
+          handleEl.dataset.bcSuppressClick = '1'
+          setTimeout(() => {
+            delete handleEl.dataset.bcSuppressClick
+          }, 0)
+          savePrefs(prefs)
+          if (typeof onDragEnd === 'function') onDragEnd()
         }
-      } catch {
-        // 忽略清理异常，不影响附件注入
+        dragged = false
       }
+
+      handleEl.addEventListener('pointerup', finishDrag)
+      handleEl.addEventListener('pointercancel', finishDrag)
+      handleEl.addEventListener(
+        'click',
+        (e) => {
+          if (handleEl.dataset.bcSuppressClick === '1') {
+            e.preventDefault()
+            e.stopPropagation()
+            e.stopImmediatePropagation()
+            delete handleEl.dataset.bcSuppressClick
+          }
+        },
+        true
+      )
     }
 
-    /* ------------------------- Toast & 非侵入胶囊 ------------------------- */
+    const hudSpinner = safeEl('span', { className: 'bc-spinner' })
+    const hudIcon = safeEl('span', { style: { display: 'none', flexShrink: '0' } })
+    const hudTitle = safeEl('span', { className: 'bc-hud-title', textContent: '准备中...' })
+    const hudPct = safeEl('span', { className: 'bc-hud-pct', textContent: '0%' })
+    const hudSub = safeEl('div', { className: 'bc-hud-sub', textContent: '' })
+    const hudBarFill = safeEl('div', { className: 'bc-bar-fill' })
+    const hudBarTrack = safeEl('div', { className: 'bc-bar-track' }, hudBarFill)
+    const hudEl = safeEl(
+      'div',
+      { className: 'bc-hud', role: 'status', dataset: { state: 'working' } },
+      safeEl(
+        'div',
+        { className: 'bc-hud-top' },
+        safeEl('div', { className: 'bc-hud-left' }, hudSpinner, hudIcon, hudTitle),
+        hudPct
+      ),
+      hudBarTrack,
+      hudSub
+    )
 
-    const toastEl = safeEl('div', { className: 'bc-toast', role: 'status' })
+    const inlineProgMsg = safeEl('span', { className: 'bc-inline-progress-msg' })
+    const inlineProgPct = safeEl('span', { className: 'bc-inline-progress-pct' })
+    const inlineProgFill = safeEl('div', { className: 'bc-bar-fill' })
+    const inlineProgBox = safeEl(
+      'div',
+      { className: 'bc-inline-progress' },
+      safeEl('div', { className: 'bc-inline-progress-head' }, inlineProgMsg, inlineProgPct),
+      safeEl('div', { className: 'bc-bar-track' }, inlineProgFill)
+    )
 
-    function showToast(msg, type = 'success', duration = 2600) {
-      clearTimeout(toastTimer)
-      toastEl.textContent = msg
-      toastEl.style.background = type === 'error' ? '#ef4444' : type === 'warn' ? '#d97706' : '#10b981'
-      toastEl.classList.add('show')
-      toastTimer = setTimeout(() => {
-        toastEl.classList.remove('show')
+    function showProgress(title, percent, subText = '') {
+      clearTimeout(hudHideTimer)
+      syncTheme()
+      const clamped = Math.max(0, Math.min(100, Math.round(percent)))
+      hudEl.dataset.state = 'working'
+      hudSpinner.style.display = 'inline-block'
+      hudIcon.style.display = 'none'
+      hudTitle.textContent = title
+      hudPct.textContent = `${clamped}%`
+      hudBarTrack.style.display = 'block'
+      hudBarFill.style.width = `${clamped}%`
+      hudSub.textContent = subText
+      hudSub.style.display = subText ? 'block' : 'none'
+      hudEl.classList.add('show')
+
+      inlineProgMsg.textContent = subText ? `${title} · ${subText}` : title
+      inlineProgPct.textContent = `${clamped}%`
+      inlineProgFill.style.width = `${clamped}%`
+      inlineProgBox.classList.add('show')
+    }
+
+    function showNotice(title, type = 'success', subText = '', duration = 2600) {
+      clearTimeout(hudHideTimer)
+      syncTheme()
+      const iconMap = { success: '✅', error: '❌', warn: '⚠️', info: '💡' }
+      hudEl.dataset.state = type === 'info' ? 'working' : type
+      hudSpinner.style.display = 'none'
+      hudIcon.style.display = 'inline-block'
+      hudIcon.textContent = iconMap[type] || '✅'
+      hudTitle.textContent = title
+      hudPct.textContent = type === 'success' ? '100%' : ''
+      hudBarTrack.style.display = type === 'success' ? 'block' : 'none'
+      hudBarFill.style.width = type === 'success' ? '100%' : '0%'
+      hudSub.textContent = subText
+      hudSub.style.display = subText ? 'block' : 'none'
+      hudEl.classList.add('show')
+
+      if (type === 'success') {
+        inlineProgMsg.textContent = title
+        inlineProgPct.textContent = '100%'
+        inlineProgFill.style.width = '100%'
+      }
+
+      hudHideTimer = setTimeout(() => {
+        hudEl.classList.remove('show')
+        inlineProgBox.classList.remove('show')
       }, duration)
+    }
+
+    function hideProgressImmediate() {
+      clearTimeout(hudHideTimer)
+      hudEl.classList.remove('show')
+      inlineProgBox.classList.remove('show')
     }
 
     const pillTextEl = safeEl('span', {})
@@ -2056,23 +1927,22 @@
             if (text) {
               const injected = await runInstantPackAndInject(text)
               if (injected && target) {
-                tryRemovePastedTextFromTarget(target, text)
+                const removed = tryRemovePastedTextFromTarget(target, text)
+                if (!removed) {
+                  showNotice(
+                    '附件已秒传，但输入框仍有残留代码',
+                    'warn',
+                    '检测到输入框含前置提示词，请手动删除多余粘贴文本',
+                    3800
+                  )
+                }
               }
             }
           }
         },
-        '⚡ 转为附件注入'
+        '⚡ 转为附件秒传'
       ),
-      safeEl(
-        'button',
-        {
-          type: 'button',
-          className: 'bc-pill-close',
-          title: '忽略',
-          onClick: hidePastePill
-        },
-        '✕'
-      )
+      safeEl('button', { type: 'button', className: 'bc-pill-close', title: '忽略', onClick: hidePastePill }, '✕')
     )
 
     function showPastePill(fileCount, text, targetEl) {
@@ -2081,7 +1951,7 @@
       pendingChatPasteTarget = targetEl || null
       pillTextEl.textContent = `📦 检测到 BlockClip 代码 (${fileCount} 个文件)`
       pastePillEl.classList.add('show')
-      pastePillTimer = setTimeout(hidePastePill, 7000)
+      pastePillTimer = setTimeout(hidePastePill, 7500)
     }
 
     function hidePastePill() {
@@ -2091,165 +1961,231 @@
       pastePillEl.classList.remove('show')
     }
 
-    /* ------------------------- 悬浮球（可拖动 + 贴边 + 右键直通） ------------------------- */
+    function tryRemovePastedTextFromTarget(target, pastedText) {
+      if (!target || !target.isConnected || !pastedText) return false
+      try {
+        if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') {
+          const val = target.value || ''
+          const normalizedPasted = pastedText.replace(/\r\n?/g, '\n')
+          let idx = val.lastIndexOf(pastedText)
+          let matchLen = pastedText.length
+          if (idx === -1) {
+            idx = val.lastIndexOf(normalizedPasted)
+            matchLen = normalizedPasted.length
+          }
+          if (idx !== -1) {
+            setNativeTextValue(target, val.slice(0, idx) + val.slice(idx + matchLen))
+            dispatchInputEventSafe(target)
+            return true
+          }
+          return false
+        }
+        const editable =
+          target.closest?.('[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]') ||
+          (target.isContentEditable ? target : null)
+        if (editable) {
+          const curNorm = (editable.innerText || editable.textContent || '').replace(/\r\n?/g, '\n').trim()
+          const pastedNorm = pastedText.replace(/\r\n?/g, '\n').trim()
+          const curCompact = curNorm.replace(/\s+/g, '')
+          const pastedCompact = pastedNorm.replace(/\s+/g, '')
+          if (curNorm && (curNorm === pastedNorm || (curCompact && curCompact === pastedCompact))) {
+            editable.focus({ preventScroll: true })
+            const sel = window.getSelection()
+            if (sel) {
+              const range = document.createRange()
+              range.selectNodeContents(editable)
+              sel.removeAllRanges()
+              sel.addRange(range)
+            }
+            if (!document.execCommand?.('delete')) {
+              editable.textContent = ''
+              dispatchInputEventSafe(editable)
+            }
+            return true
+          }
+        }
+      } catch {}
+      return false
+    }
 
-    const floatBtn = safeEl(
+    async function injectAttachmentToPage(artifact) {
+      cancelScheduledCleanup()
+      const editor = SITE.findEditor()
+      if (!editor) return { ok: false, reason: '未找到主对话输入框，请确认当前处于对话页面。' }
+
+      if (document.activeElement !== editor) {
+        try {
+          editor.focus({ preventScroll: true })
+        } catch {}
+        await nextPaint()
+      }
+
+      const scope = SITE.findUploadScope(editor)
+      const prepared = await prepareBinaryPayload(artifact.file)
+
+      const runPaste = async (timeoutMs) => {
+        showProgress('正在粘贴注入附件...', 90, `${artifact.name} (${formatBytes(artifact.blob.size)}) · 粘贴模式`)
+        const watcher = createAttachmentWatcher(scope, artifact.name, artifact.timeStem, timeoutMs, hostEl)
+        if (!dispatchPasteEvent(editor, prepared)) {
+          watcher.cancel()
+          return false
+        }
+        return await watcher.promise
+      }
+
+      const runFileInput = async (timeoutMs) => {
+        const inputs = findValidFileInputs(artifact.file, scope)
+        if (inputs.length === 0) return false
+        showProgress('正在通过文件域上传...', 92, `${artifact.name} (${formatBytes(artifact.blob.size)}) · 原生 Input`)
+        for (const inp of inputs) {
+          const watcher = createAttachmentWatcher(scope, artifact.name, artifact.timeStem, timeoutMs, hostEl)
+          if (!dispatchNativeFileInput(inp, prepared)) {
+            watcher.cancel()
+            continue
+          }
+          if (await watcher.promise) return true
+          if (inputs.length > 1) clearSingleFileInput(inp)
+        }
+        return false
+      }
+
+      try {
+        if (prefs.uploadMode === 'paste') {
+          const ok = await runPaste(SINGLE_MODE_VERIFY_MS)
+          return ok
+            ? { ok: true, method: 'paste' }
+            : { ok: false, reason: '未检测到附件挂载，请在右侧【ZIP 助手】面板切换投递模式或下载后上传。' }
+        }
+        if (prefs.uploadMode === 'input') {
+          const ok = await runFileInput(SINGLE_MODE_VERIFY_MS)
+          return ok
+            ? { ok: true, method: 'input' }
+            : { ok: false, reason: '未检测到有效上传文件域，请切换为「粘贴」或「自动兜底」模式重试。' }
+        }
+
+        const order = preferredStrategy === 'input' ? ['input', 'paste'] : ['paste', 'input']
+        for (let i = 0; i < order.length; i++) {
+          const strategy = order[i]
+          const timeout = i === 0 ? PRIMARY_TIMEOUT_MS : FALLBACK_TIMEOUT_MS
+          const ok = strategy === 'paste' ? await runPaste(timeout) : await runFileInput(timeout)
+          if (ok) {
+            preferredStrategy = strategy
+            return { ok: true, method: strategy }
+          }
+        }
+        return { ok: false, reason: '所有投递通道均未检测到附件挂载，请点“下载”后手动上传。' }
+      } finally {
+        scheduleCleanup(POST_INJECT_CLEANUP_MS)
+      }
+    }
+
+    const sideTabBtn = safeEl(
       'button',
       {
         type: 'button',
-        className: 'bc-float-btn',
-        title: IS_FIREFOX
-          ? '左键：展开面板 | 右键 / Alt+Shift+Z：读取剪贴板并上传（需点确认） | 拖动：调整位置'
-          : '左键：展开面板 | 右键 / Alt+Shift+Z：一键读取剪贴板并上传 | 拖动：调整位置',
-        'aria-label': 'BlockClip to ZIP 助手'
+        className: 'bc-side-tab',
+        title: '上下拖动可调整位置 · 点击打开 BlockClip 面板 (Alt+B) | 剪贴板一键秒传 (Alt+Shift+Z)',
+        onClick: () => {
+          if (sideTabBtn.dataset.bcSuppressClick === '1') return
+          setPanelOpen(true)
+        }
       },
-      '📦'
+      'ZIP 助手'
     )
 
-    function applyFloatPosition() {
-      const vh = window.innerHeight || 800
-      const clampedBottom = Math.max(16, Math.min(vh - 64, Number(prefs.floatBottom) || 88))
-      prefs.floatBottom = clampedBottom
-      floatBtn.style.bottom = `${clampedBottom}px`
-      if (prefs.floatSide === 'left') {
-        floatBtn.style.left = '16px'
-        floatBtn.style.right = 'auto'
-      } else {
-        floatBtn.style.right = '16px'
-        floatBtn.style.left = 'auto'
-      }
-      if (isOpen) positionPanelSmart()
+    function resetArtifactState() {
+      if (outerBusy) return
+      repackToken++
+      clearTimeout(repackTimer)
+      innerBusy = false
+      revokeCurrentUrl()
+      currentArtifact = null
+      parsedFiles = []
+      customFileName = ''
+      isTreeExpanded = false
+      treeListEl.style.display = 'none'
+      treeToggleArrow.textContent = '▼'
+      fileCard.classList.remove('dimmed')
+      resultContainer.style.display = 'none'
+      sensitiveAlertEl.style.display = 'none'
+      geminiLimitAlertEl.style.display = 'none'
+      hideProgressImmediate()
+      updateBusyUI()
     }
 
-    function positionPanelSmart() {
-      const vw = window.innerWidth || 1280
-      const vh = window.innerHeight || 800
-      const rect = floatBtn.getBoundingClientRect()
-      const isRight = rect.left + rect.width / 2 > vw / 2
-      const openUpward = rect.top + rect.height / 2 > vh * 0.45
+    function getActiveRawText() {
+      return rawTextMemory !== null ? rawTextMemory : textareaEl.value
+    }
 
-      if (isRight) {
-        panelEl.style.right = '16px'
-        panelEl.style.left = 'auto'
+    function setRawText(text) {
+      if (text.length >= LARGE_TEXT_THRESHOLD) {
+        rawTextMemory = text
+        const byteSize = utf8ByteLength(text)
+        textareaEl.value = `${text.slice(0, PREVIEW_CHAR_LIMIT)}\n\n... [大文本内存直通预览，共 ${formatBytes(byteSize)}，已省略后续渲染以防卡顿] ...`
+        largeTextLabel.textContent = `⚡ 已内存加载大文本 (${formatBytes(byteSize)})，零卡顿直通`
+        largeBadgeEl.style.display = 'flex'
       } else {
-        panelEl.style.left = '16px'
-        panelEl.style.right = 'auto'
-      }
-
-      if (openUpward) {
-        const bottomGap = Math.max(16, vh - rect.top + 10)
-        panelEl.style.bottom = `${bottomGap}px`
-        panelEl.style.top = 'auto'
-        panelEl.style.maxHeight = `${Math.max(260, rect.top - 26)}px`
-        panelEl.style.transformOrigin = isRight ? 'bottom right' : 'bottom left'
-      } else {
-        const topGap = Math.max(16, rect.bottom + 10)
-        panelEl.style.top = `${topGap}px`
-        panelEl.style.bottom = 'auto'
-        panelEl.style.maxHeight = `${Math.max(260, vh - rect.bottom - 26)}px`
-        panelEl.style.transformOrigin = isRight ? 'top right' : 'top left'
+        rawTextMemory = null
+        textareaEl.value = text
+        largeBadgeEl.style.display = 'none'
       }
     }
 
-    // 悬浮球指针拖拽与点击区分（8px 位移防抖，适配高 DPI 触控板）
-    let dragStartX = 0
-    let dragStartY = 0
-    let btnStartLeft = 0
-    let btnStartBottom = 0
-    let pointerMoved = false
-    let isPointerDown = false
+    const modeZipBtn = safeEl('button', { type: 'button', className: 'bc-seg-btn' }, '📦 ZIP 包')
+    const modeMdBtn = safeEl('button', { type: 'button', className: 'bc-seg-btn' }, '📄 单文件 .md')
 
-    floatBtn.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0) return // 仅左键拖动/点击，放行右键直通
-      isPointerDown = true
-      pointerMoved = false
-      dragStartX = e.clientX
-      dragStartY = e.clientY
-      const rect = floatBtn.getBoundingClientRect()
-      btnStartLeft = rect.left
-      btnStartBottom = window.innerHeight - rect.bottom
-      try {
-        floatBtn.setPointerCapture(e.pointerId)
-      } catch {
-        // 忽略不支持捕获的设备
-      }
-    })
+    const deliveryMeta = [
+      { id: 'paste', label: '⚡ 粘贴(无闪烁)', tip: '直接向主输入框派发文件粘贴事件，零遮罩闪烁' },
+      { id: 'input', label: '📂 原生上传', tip: '通过页面原生 file input 上传' },
+      { id: 'auto', label: '🔄 自动兜底', tip: '自动检测挂载状态并在 粘贴 ↔ 原生上传 间兜底切换' }
+    ]
+    const deliveryBtns = deliveryMeta.map((m) =>
+      safeEl(
+        'button',
+        {
+          type: 'button',
+          className: 'bc-seg-btn',
+          title: m.tip,
+          dataset: { mode: m.id },
+          onClick: () => {
+            prefs.uploadMode = m.id
+            savePrefs(prefs)
+            syncModeUI()
+          }
+        },
+        m.label
+      )
+    )
 
-    floatBtn.addEventListener('pointermove', (e) => {
-      if (!isPointerDown) return
-      const dx = e.clientX - dragStartX
-      const dy = e.clientY - dragStartY
-      if (!pointerMoved && Math.hypot(dx, dy) > 8) {
-        pointerMoved = true
-        floatBtn.classList.add('dragging')
-      }
-      if (!pointerMoved) return
-
-      const vw = window.innerWidth
-      const vh = window.innerHeight
-      const nextLeft = Math.max(8, Math.min(vw - 54, btnStartLeft + dx))
-      const nextBottom = Math.max(16, Math.min(vh - 64, btnStartBottom - dy))
-      floatBtn.style.left = `${nextLeft}px`
-      floatBtn.style.right = 'auto'
-      floatBtn.style.bottom = `${nextBottom}px`
-    })
-
-    function finishFloatDrag(e) {
-      if (!isPointerDown) return
-      isPointerDown = false
-      floatBtn.classList.remove('dragging')
-      try {
-        floatBtn.releasePointerCapture(e.pointerId)
-      } catch {
-        // 忽略
-      }
-
-      if (!pointerMoved) {
-        togglePanel()
-        return
-      }
-
-      const rect = floatBtn.getBoundingClientRect()
-      prefs.floatSide = rect.left + rect.width / 2 < window.innerWidth / 2 ? 'left' : 'right'
-      prefs.floatBottom = Math.round(Math.max(16, Math.min(window.innerHeight - 64, window.innerHeight - rect.bottom)))
-      savePrefs(prefs)
-      applyFloatPosition()
+    function syncInlineBtnLabel() {
+      if (!cachedInlineBtn) return
+      cachedInlineBtn.textContent = prefs.exportMode === 'zip' ? '📦 粘贴为ZIP' : '📄 粘贴为MD'
     }
 
-    floatBtn.addEventListener('pointerup', finishFloatDrag)
-    floatBtn.addEventListener('pointercancel', finishFloatDrag)
-
-    // 右键悬浮球：1 步直通（读剪贴板 -> 打包 -> 注入附件）
-    floatBtn.addEventListener('contextmenu', async (e) => {
-      e.preventDefault()
-      await runInstantFromClipboard()
-    })
-
-    /* ------------------------- 面板内部组件构建 ------------------------- */
-
-    const modeZipBtn = safeEl('button', { type: 'button', className: 'bc-mode-btn' }, '📦 ZIP 包')
-    const modeMdBtn = safeEl('button', { type: 'button', className: 'bc-mode-btn' }, '📄 单文件 .md')
-
-    function syncModeButtons() {
-      modeZipBtn.className = `bc-mode-btn${prefs.exportMode === 'zip' ? ' active' : ''}`
-      modeMdBtn.className = `bc-mode-btn${prefs.exportMode === 'single_md' ? ' active' : ''}`
+    function syncModeUI() {
+      modeZipBtn.className = `bc-seg-btn${prefs.exportMode === 'zip' ? ' active' : ''}`
+      modeMdBtn.className = `bc-seg-btn${prefs.exportMode === 'single_md' ? ' active' : ''}`
+      deliveryBtns.forEach((btn) => {
+        btn.className = `bc-seg-btn${btn.dataset.mode === prefs.uploadMode ? ' active' : ''}`
+      })
       processBtn.textContent = prefs.exportMode === 'zip' ? '⚡ 还原层级并打包 ZIP' : '⚡ 合并并生成 .md 附件'
       downloadBtn.textContent = prefs.exportMode === 'zip' ? '💾 下载 ZIP' : '💾 下载 .md'
+      syncInlineBtnLabel()
     }
 
     modeZipBtn.addEventListener('click', () => {
-      if (prefs.exportMode === 'zip') return
+      if (outerBusy || prefs.exportMode === 'zip') return
       prefs.exportMode = 'zip'
       savePrefs(prefs)
-      syncModeButtons()
+      syncModeUI()
       if (parsedFiles.length > 0) rebuildCurrentSelection(false)
     })
 
     modeMdBtn.addEventListener('click', () => {
-      if (prefs.exportMode === 'single_md') return
+      if (outerBusy || prefs.exportMode === 'single_md') return
       prefs.exportMode = 'single_md'
       savePrefs(prefs)
-      syncModeButtons()
+      syncModeUI()
       if (parsedFiles.length > 0) rebuildCurrentSelection(false)
     })
 
@@ -2258,15 +2194,12 @@
       {
         type: 'button',
         className: 'bc-quick-btn',
-        title: IS_FIREFOX
-          ? '读取剪贴板 -> 自动打包 -> 注入附件（Firefox 需点击弹出的原生「粘贴」按钮）'
-          : '读取剪贴板 -> 自动打包 -> 直接注入当前页面附件（快捷键 Alt+Shift+Z）',
+        title: '读取剪贴板 -> 自动解析打包 -> 秒传为附件 (快捷键 Alt+Shift+Z)',
         onClick: runInstantFromClipboard
       },
-      '🚀 剪贴板一键上传'
+      '🚀 剪贴板一键秒传'
     )
 
-    // 设置抽屉
     function makeSettingToggle(label, prefKey, onChangeExtra) {
       const checkbox = safeEl('input', {
         type: 'checkbox',
@@ -2283,12 +2216,11 @@
     const settingsEl = safeEl(
       'div',
       { className: 'bc-settings' },
-      makeSettingToggle('粘贴后自动解析并打包', 'autoPackOnPaste'),
+      makeSettingToggle('面板内粘贴后自动解析打包', 'autoPackOnPaste'),
       makeSettingToggle('默认跳过二进制占位文件', 'skipBinaryPlaceholders', (checked) => {
+        if (outerBusy) return
         if (parsedFiles.length > 0) {
-          for (const f of parsedFiles) {
-            if (f.isBinary) f.selected = !checked
-          }
+          for (const f of parsedFiles) if (f.isBinary) f.selected = !checked
           renderFileTree()
           scheduleRepack()
         }
@@ -2306,11 +2238,13 @@
         type: 'button',
         className: 'bc-icon-btn',
         title: '偏好设置',
-        onClick: () => settingsEl.classList.toggle('open')
+        onClick: () => {
+          settingsEl.classList.toggle('open')
+          requestAnimationFrame(() => applyVerticalCenterPosition(panelEl, prefs.panelTopPct, 14))
+        }
       },
       '⚙️'
     )
-
     const clearBtn = safeEl(
       'button',
       {
@@ -2318,54 +2252,44 @@
         className: 'bc-icon-btn',
         title: '清空内容',
         onClick: () => {
+          if (outerBusy) return
           rawTextMemory = null
           textareaEl.value = ''
           largeBadgeEl.style.display = 'none'
           resetArtifactState()
-          showToast('已清空')
+          showNotice('已清空内容', 'info', '', 1400)
         }
       },
       '🗑️'
     )
-
     const closeBtn = safeEl(
       'button',
-      {
-        type: 'button',
-        className: 'bc-icon-btn',
-        title: '收起面板 (Esc)',
-        onClick: () => setPanelOpen(false)
-      },
+      { type: 'button', className: 'bc-icon-btn', title: '收起面板 (Esc)', onClick: () => setPanelOpen(false) },
       '✕'
     )
 
-    // 大文本状态提示条
     const largeTextLabel = safeEl('span', {})
-    const largeBadgeEl = safeEl(
-      'div',
-      { className: 'bc-large-badge' },
-      largeTextLabel,
-      safeEl(
-        'button',
-        {
-          type: 'button',
-          className: 'bc-alert-btn',
-          onClick: () => {
-            rawTextMemory = null
-            textareaEl.value = ''
-            largeBadgeEl.style.display = 'none'
-            resetArtifactState()
-          }
-        },
-        '清除'
-      )
+    const largeClearBtn = safeEl(
+      'button',
+      {
+        type: 'button',
+        className: 'bc-alert-btn',
+        onClick: () => {
+          if (outerBusy) return
+          rawTextMemory = null
+          textareaEl.value = ''
+          largeBadgeEl.style.display = 'none'
+          resetArtifactState()
+        }
+      },
+      '清除'
     )
+    const largeBadgeEl = safeEl('div', { className: 'bc-large-badge' }, largeTextLabel, largeClearBtn)
 
-    // 文本输入框（拦截超大粘贴防卡顿 + 粘贴自动打包）
     const textareaEl = safeEl('textarea', {
       className: 'bc-textarea',
       placeholder:
-        '在此 Ctrl+V 粘贴 BlockClip 导出的文本（粘贴即自动打包）...\n例如：\nFile: src/index.ts\n```typescript\n// ...\n```'
+        '在此 Ctrl+V 粘贴 BlockClip 导出的文本（粘贴即自动解析打包）...\n例如：\nFile: src/index.ts\n```typescript\n// ...\n```'
     })
 
     textareaEl.addEventListener('paste', (e) => {
@@ -2374,19 +2298,20 @@
       if (pasted.length >= LARGE_TEXT_THRESHOLD) {
         e.preventDefault()
         setRawText(pasted)
-        if (prefs.autoPackOnPaste) {
-          processRawText(pasted)
-        }
+        if (prefs.autoPackOnPaste) processRawText(pasted, true)
         return
       }
-      rawTextMemory = null
+      if (rawTextMemory !== null) {
+        e.preventDefault()
+        setRawText(pasted)
+        if (prefs.autoPackOnPaste && /^File:\s*.+/im.test(pasted)) processRawText(pasted, true)
+        return
+      }
       largeBadgeEl.style.display = 'none'
       if (prefs.autoPackOnPaste) {
         setTimeout(() => {
           const val = textareaEl.value
-          if (val && /^File:\s*.+/im.test(val)) {
-            processRawText(val)
-          }
+          if (val && /^File:\s*.+/im.test(val)) processRawText(val, true)
         }, 0)
       }
     })
@@ -2404,91 +2329,80 @@
         type: 'button',
         className: 'bc-paste-btn',
         onClick: async () => {
+          if (outerBusy) return
+          let clipText
           try {
-            const clipText = await navigator.clipboard.readText()
-            if (!clipText || !clipText.trim()) {
-              showToast('剪贴板为空', 'warn')
-              return
-            }
-            setRawText(clipText)
-            if (prefs.autoPackOnPaste) {
-              await processRawText(clipText)
-            } else {
-              showToast('已从剪贴板粘贴')
-            }
+            clipText = await readClipboardActive()
           } catch {
-            showToast(
+            showNotice(
               IS_FIREFOX
-                ? 'Firefox 需点击原生「粘贴」确认，或直接在下方按 Ctrl+V'
-                : '无法自动读取剪贴板，请直接 Ctrl+V 粘贴',
+                ? 'Firefox 剪贴板读取受阻：请直接在下方 Ctrl+V，或开启“聊天框粘贴自动转附件”'
+                : '无法读取剪贴板，请允许剪贴板权限或直接 Ctrl+V',
               'error',
+              '',
               3400
             )
             textareaEl.focus()
+            return
           }
+          if (!clipText || !clipText.trim()) {
+            showNotice('剪贴板为空', 'warn', '', 1800)
+            return
+          }
+          setRawText(clipText)
+          if (prefs.autoPackOnPaste) await processRawText(clipText, true)
+          else showNotice('已从剪贴板读取内容', 'info', '', 1600)
         }
       },
       '📋 读取剪贴板'
     )
 
-    // 警告横幅（敏感文件 & Gemini 10 文件提醒）
     const sensitiveAlertText = safeEl('span', {})
-    const sensitiveAlertEl = safeEl(
-      'div',
-      { className: 'bc-alert' },
-      sensitiveAlertText,
-      safeEl(
-        'button',
-        {
-          type: 'button',
-          className: 'bc-alert-btn',
-          onClick: () => {
-            for (const f of parsedFiles) {
-              if (f.isSensitive) f.selected = false
-            }
-            renderFileTree()
-            scheduleRepack(0)
-            showToast('已取消勾选敏感文件并重新打包')
-          }
-        },
-        '一键排除'
-      )
+    const sensitiveExcludeBtn = safeEl(
+      'button',
+      {
+        type: 'button',
+        className: 'bc-alert-btn',
+        onClick: () => {
+          if (outerBusy) return
+          for (const f of parsedFiles) if (f.isSensitive) f.selected = false
+          renderFileTree()
+          scheduleRepack(0)
+          showNotice('已取消勾选敏感文件并重新打包', 'info', '', 1800)
+        }
+      },
+      '一键排除'
     )
+    const sensitiveAlertEl = safeEl('div', { className: 'bc-alert' }, sensitiveAlertText, sensitiveExcludeBtn)
 
     const geminiLimitText = safeEl('span', {})
-    const geminiLimitAlertEl = safeEl(
-      'div',
-      { className: 'bc-alert' },
-      geminiLimitText,
-      safeEl(
-        'button',
-        {
-          type: 'button',
-          className: 'bc-alert-btn',
-          onClick: () => {
-            prefs.exportMode = 'single_md'
-            savePrefs(prefs)
-            syncModeButtons()
-            rebuildCurrentSelection(false)
-          }
-        },
-        '切为单文件 .md'
-      )
+    const geminiSwitchMdBtn = safeEl(
+      'button',
+      {
+        type: 'button',
+        className: 'bc-alert-btn',
+        onClick: () => {
+          if (outerBusy) return
+          prefs.exportMode = 'single_md'
+          savePrefs(prefs)
+          syncModeUI()
+          rebuildCurrentSelection(true)
+        }
+      },
+      '切为单文件 .md'
     )
+    const geminiLimitAlertEl = safeEl('div', { className: 'bc-alert' }, geminiLimitText, geminiSwitchMdBtn)
 
-    // 结果区
     const resultContainer = safeEl('div', { className: 'bc-result-box' })
     const summaryTextEl = safeEl('span', { textContent: '解析完成' })
     const statBadgeEl = safeEl('span', { className: 'bc-stat-badge', textContent: '0 B' })
-
     const nameInputEl = safeEl('input', {
       type: 'text',
       className: 'bc-name-input',
       value: 'blockclip_files.zip',
-      title: '点击可自定义附件文件名'
+      title: '点击可自定义附件文件名（Enter 确认）'
     })
 
-    // 轻量重命名：复用已生成的 Blob 直接重建 File，避免触发耗时的二次压缩
     function renameCurrentArtifact(rawName) {
       if (!currentArtifact) return
       const cleaned = rawName.trim().replace(/[\\/:*?"<>|]/g, '_')
@@ -2498,37 +2412,26 @@
       }
       const ext = prefs.exportMode === 'single_md' ? 'md' : 'zip'
       const base = cleaned.replace(/\.(zip|md|txt)$/i, '')
-      const nextName = base ? `${base}.${ext}` : currentArtifact.name
+      if (!base) {
+        nameInputEl.value = currentArtifact.name
+        return
+      }
+      const nextName = `${base}.${ext}`
       customFileName = nextName
       if (nextName === currentArtifact.name) {
         nameInputEl.value = nextName
         return
       }
       const nextFile = new File([currentArtifact.blob], nextName, { type: currentArtifact.mime })
-      currentArtifact = { ...currentArtifact, name: nextName, file: nextFile }
+      const nextTimeStem =
+        currentArtifact.timeStem && nextName.includes(currentArtifact.timeStem) ? currentArtifact.timeStem : ''
+      currentArtifact = { ...currentArtifact, name: nextName, timeStem: nextTimeStem, file: nextFile }
       nameInputEl.value = nextName
-      showToast(`已重命名为 ${nextName}`)
+      showNotice(`已重命名为 ${nextName}`, 'info', '', 1600)
     }
 
-    // 防止在改名输入框里拖动或框选文字时与父级 draggable="true" 冲突（重点修复 Firefox）
-    nameInputEl.addEventListener('mousedown', (e) => e.stopPropagation())
-    nameInputEl.addEventListener('dragstart', (e) => e.preventDefault())
-    nameInputEl.addEventListener('mouseenter', () => {
-      dragCard.draggable = false
-    })
-    nameInputEl.addEventListener('mouseleave', () => {
-      if (shadow.activeElement !== nameInputEl) {
-        dragCard.draggable = true
-      }
-    })
-    nameInputEl.addEventListener('focus', () => {
-      dragCard.draggable = false
-    })
-    nameInputEl.addEventListener('blur', () => {
-      dragCard.draggable = true
-    })
     nameInputEl.addEventListener('keydown', (e) => {
-      if (e.isComposing || e.keyCode === 229) return
+      if (e.isComposing || e.key === 'Process') return
       if (e.key === 'Enter') {
         e.preventDefault()
         nameInputEl.blur()
@@ -2539,124 +2442,76 @@
         nameInputEl.blur()
       }
     })
-    nameInputEl.addEventListener('change', () => {
-      renameCurrentArtifact(nameInputEl.value)
-    })
+    nameInputEl.addEventListener('change', () => renameCurrentArtifact(nameInputEl.value))
 
-    const dragCardDesc = safeEl('div', {
-      className: 'bc-drag-desc',
-      textContent: IS_FIREFOX
-        ? '🖱️ 拖入对话区自动上传（保存到本地请点下方下载）'
-        : '🖱️ 拖入对话区自动上传，或拖到桌面直接保存'
+    const fileCardIcon = safeEl('div', { className: 'bc-file-icon' }, '📦')
+    const fileCardDesc = safeEl('div', {
+      className: 'bc-file-desc',
+      textContent: '点击文件名可重命名 · 点击下方按钮一键注入或下载'
     })
-    const dragCardIcon = safeEl('div', { className: 'bc-drag-icon' }, '📦')
-
-    const dragCard = safeEl(
+    const fileCard = safeEl(
       'div',
-      {
-        className: 'bc-drag-card',
-        draggable: true,
-        title: IS_FIREFOX
-          ? '按住拖到页面聊天框作为附件上传'
-          : '按住拖到页面聊天框作为附件上传，或拖到浏览器外保存到桌面'
-      },
-      dragCardIcon,
-      safeEl('div', { className: 'bc-drag-info' }, nameInputEl, dragCardDesc)
+      { className: 'bc-file-card' },
+      fileCardIcon,
+      safeEl('div', { className: 'bc-file-info' }, nameInputEl, fileCardDesc)
     )
 
-    /* ------------------------- 页内拖拽桥接（核心稳定性修复） ------------------------- */
-
-    function onWindowDragOver(e) {
-      if (!isDraggingCard) return
-      if (hostEl.contains(e.target)) return
-      e.preventDefault()
-      if (e.dataTransfer) {
-        e.dataTransfer.dropEffect = 'copy'
-      }
-    }
-
-    async function onWindowDrop(e) {
-      if (!isDraggingCard) return
-      if (hostEl.contains(e.target)) return
-      e.preventDefault()
-      e.stopImmediatePropagation()
-      const dropTarget = e.target
-      cleanupDragBridge()
-      if (currentArtifact) {
-        await performInject(currentArtifact.file, dropTarget)
-      }
-    }
-
-    function cleanupDragBridge() {
-      if (!isDraggingCard) return
-      isDraggingCard = false
-      panelEl.classList.remove('dragging-ghost')
-      window.removeEventListener('dragover', onWindowDragOver, true)
-      window.removeEventListener('drop', onWindowDrop, true)
-    }
-
-    dragCard.addEventListener('dragstart', (e) => {
-      if (!currentArtifact) {
-        e.preventDefault()
-        return
-      }
-      isDraggingCard = true
-
-      if (e.dataTransfer) {
-        e.dataTransfer.effectAllowed = 'copy'
-        e.dataTransfer.clearData()
-        // 不设置 text/plain，彻底杜绝拖进输入框变成粘贴文件名文本的 Bug；同时满足 Firefox 启动拖拽要求
-        e.dataTransfer.setData('application/x-blockclip-artifact', currentArtifact.name)
-        // DownloadURL 为 Chromium 专属，仅在非 Firefox 环境写入
-        if (!IS_FIREFOX && currentArtifactUrl) {
-          e.dataTransfer.setData('DownloadURL', `${currentArtifact.mime}:${currentArtifact.name}:${currentArtifactUrl}`)
-        }
-      }
-
-      window.addEventListener('dragover', onWindowDragOver, true)
-      window.addEventListener('drop', onWindowDrop, true)
-
-      // 下一帧半透明穿透面板，既保留清晰的拖拽残影，又避免面板遮挡底部输入框
-      requestAnimationFrame(() => {
-        if (isDraggingCard) panelEl.classList.add('dragging-ghost')
+    function updateBusyUI() {
+      busy = outerBusy || innerBusy
+      processBtn.disabled = busy
+      instantClipboardBtn.disabled = busy
+      injectBtn.disabled = busy || !currentArtifact
+      downloadBtn.disabled = busy || !currentArtifact
+      modeZipBtn.disabled = outerBusy
+      modeMdBtn.disabled = outerBusy
+      clearBtn.disabled = outerBusy
+      largeClearBtn.disabled = outerBusy
+      pasteBtn.disabled = outerBusy
+      sensitiveExcludeBtn.disabled = outerBusy
+      geminiSwitchMdBtn.disabled = outerBusy
+      treeListEl.querySelectorAll('.bc-tree-check').forEach((cb) => {
+        cb.disabled = outerBusy
       })
-    })
-
-    dragCard.addEventListener('dragend', cleanupDragBridge)
-
-    /* ------------------------- 注入 & 下载操作按钮 ------------------------- */
-
-    async function performInject(file, customDropTarget = null) {
-      injectBtn.disabled = true
-      const prevText = injectBtn.textContent
-      injectBtn.textContent = '⏳ 正在注入...'
-
-      try {
-        const res = await injectAttachmentToPage(file, customDropTarget)
-        if (res.ok) {
-          const channelTip = res.verified ? '' : '（已派发，请确认附件区）'
-          showToast(`已注入 ${file.name}${channelTip}`, 'success')
-          if (prefs.autoCloseAfterInject && isOpen) {
-            setTimeout(() => {
-              setPanelOpen(false)
-              const editor = findEditorElement()
-              if (editor) {
-                try {
-                  editor.focus({ preventScroll: true })
-                } catch {
-                  // 忽略
-                }
-              }
-            }, 320)
-          }
-          return true
+      if (cachedInlineBtn) {
+        cachedInlineBtn.style.opacity = busy ? '0.5' : cachedInlineBtn.dataset.floating === '1' ? '1' : '0.88'
+        if (!busy && cachedInlineBtn.dataset.floating !== '1' && !cachedInlineBtn.matches(':hover')) {
+          cachedInlineBtn.style.backgroundColor = 'rgba(59, 130, 246, 0.14)'
+          cachedInlineBtn.style.borderColor = 'rgba(59, 130, 246, 0.36)'
         }
-        showToast('未能自动匹配上传框，请直接拖拽卡片或下载后上传', 'warn', 3500)
-        return false
-      } finally {
-        injectBtn.disabled = false
-        injectBtn.textContent = prevText
       }
+    }
+
+    function setOuterBusy(next) {
+      outerBusy = Boolean(next)
+      updateBusyUI()
+    }
+
+    async function performInjectArtifact(artifact) {
+      if (!artifact) return false
+      const res = await injectAttachmentToPage(artifact)
+      if (res.ok) {
+        const modeLabel = res.method === 'paste' ? '粘贴模式' : '原生上传'
+        showNotice(
+          `已秒传附件：${artifact.name}`,
+          'success',
+          `${formatBytes(artifact.blob.size)} · ${modeLabel}校验通过`,
+          2400
+        )
+        if (prefs.autoCloseAfterInject && isOpen) {
+          setTimeout(() => {
+            setPanelOpen(false)
+            const editor = SITE.findEditor()
+            if (editor) {
+              try {
+                editor.focus({ preventScroll: true })
+              } catch {}
+            }
+          }, 300)
+        }
+        return true
+      }
+      showNotice('未检测到附件挂载', 'error', res.reason || '请切换投递模式或下载后手动上传', 3800)
+      return false
     }
 
     const injectBtn = safeEl(
@@ -2664,13 +2519,22 @@
       {
         type: 'button',
         className: 'bc-btn-sub bc-btn-inject',
-        title: '通过多通道引擎将附件直接注入当前对话框',
+        title: '将产物无闪烁注入当前对话框附件区',
         onClick: async () => {
           if (!currentArtifact) return
-          await performInject(currentArtifact.file)
+          if (busy) {
+            showNotice('正在处理上一个任务，请稍候…', 'warn', '', 1600)
+            return
+          }
+          setOuterBusy(true)
+          try {
+            await performInjectArtifact(currentArtifact)
+          } finally {
+            setOuterBusy(false)
+          }
         }
       },
-      '📎 一键添加到附件'
+      '⚡ 一键添加到附件'
     )
 
     const downloadBtn = safeEl(
@@ -2691,13 +2555,11 @@
           setTimeout(() => {
             if (a.parentNode) a.parentNode.removeChild(a)
           }, 1500)
-          showToast(`开始下载 ${currentArtifact.name}`)
+          showNotice(`开始下载：${currentArtifact.name}`, 'info', formatBytes(currentArtifact.blob.size), 1800)
         }
       },
       '💾 下载 ZIP'
     )
-
-    /* ------------------------- 可勾选文件树 ------------------------- */
 
     const treeListEl = safeEl('div', { className: 'bc-tree-list' })
     const treeToggleTitle = safeEl('span', {}, '包含文件列表')
@@ -2710,6 +2572,7 @@
           isTreeExpanded = !isTreeExpanded
           treeListEl.style.display = isTreeExpanded ? 'flex' : 'none'
           treeToggleArrow.textContent = isTreeExpanded ? '▲' : '▼'
+          requestAnimationFrame(() => applyVerticalCenterPosition(panelEl, prefs.panelTopPct, 14))
         }
       },
       treeToggleTitle,
@@ -2719,7 +2582,7 @@
     function scheduleRepack(delay = 280) {
       clearTimeout(repackTimer)
       repackTimer = setTimeout(() => {
-        rebuildCurrentSelection(false)
+        if (!outerBusy) rebuildCurrentSelection(true)
       }, delay)
     }
 
@@ -2733,7 +2596,6 @@
           selectedCount++
           if (item.isSensitive) sensitiveSelectedCount++
         }
-
         const slashIdx = item.relativePath.lastIndexOf('/')
         const dirPart = slashIdx >= 0 ? item.relativePath.slice(0, slashIdx + 1) : ''
         const filePart = slashIdx >= 0 ? item.relativePath.slice(slashIdx + 1) : item.relativePath
@@ -2742,6 +2604,7 @@
           type: 'checkbox',
           className: 'bc-tree-check',
           checked: item.selected,
+          disabled: outerBusy,
           onChange: () => {
             item.selected = check.checked
             row.classList.toggle('dimmed', !item.selected)
@@ -2782,13 +2645,10 @@
           ),
           safeEl('span', { className: 'bc-tree-badges' }, badges)
         )
-
         frag.appendChild(row)
       }
 
-      while (treeListEl.firstChild) {
-        treeListEl.removeChild(treeListEl.firstChild)
-      }
+      while (treeListEl.firstChild) treeListEl.removeChild(treeListEl.firstChild)
       treeListEl.appendChild(frag)
       treeToggleTitle.textContent = `包含文件列表（已选 ${selectedCount} / ${parsedFiles.length}）`
       updateAlerts(sensitiveSelectedCount, selectedCount)
@@ -2807,16 +2667,15 @@
           }
         }
       }
-
+      treeToggleTitle.textContent = `包含文件列表（已选 ${selectedCount} / ${parsedFiles.length}）`
       if (sensitiveCount > 0) {
-        sensitiveAlertText.textContent = `⚠️ 检测到 ${sensitiveCount} 个疑似敏感文件（如 .env / 密钥）`
+        sensitiveAlertText.textContent = `⚠️ 检测到 ${sensitiveCount} 个疑似敏感文件（如 .env / 密钥配置）`
         sensitiveAlertEl.style.display = 'flex'
       } else {
         sensitiveAlertEl.style.display = 'none'
       }
-
       if (IS_GEMINI && prefs.exportMode === 'zip' && selectedCount > 10) {
-        geminiLimitText.textContent = `💡 当前含 ${selectedCount} 个文件，若 Gemini 拒收过多文件 ZIP 可切换为单文件`
+        geminiLimitText.textContent = `💡 当前含 ${selectedCount} 个文件，若 Gemini 拒收大数量 ZIP 可切为单文件`
         geminiLimitAlertEl.style.display = 'flex'
       } else {
         geminiLimitAlertEl.style.display = 'none'
@@ -2826,122 +2685,208 @@
     resultContainer.appendChild(safeEl('div', { className: 'bc-summary-row' }, summaryTextEl, statBadgeEl))
     resultContainer.appendChild(sensitiveAlertEl)
     resultContainer.appendChild(geminiLimitAlertEl)
-    resultContainer.appendChild(dragCard)
+    resultContainer.appendChild(fileCard)
     resultContainer.appendChild(safeEl('div', { className: 'bc-button-group' }, injectBtn, downloadBtn))
     resultContainer.appendChild(treeToggleEl)
     resultContainer.appendChild(treeListEl)
 
-    /* ------------------------- 解析与打包核心调度 ------------------------- */
+    async function rebuildCurrentSelection(showSuccessNotice = true, keepBusyOuter = false) {
+      if (!keepBusyOuter && outerBusy) return null
+      clearTimeout(repackTimer)
+      const myToken = ++repackToken
 
-    async function rebuildCurrentSelection(showSuccessToast = true) {
       const selectedItems = parsedFiles.filter((f) => f.selected)
       if (selectedItems.length === 0) {
         revokeCurrentUrl()
         currentArtifact = null
         summaryTextEl.textContent = '未勾选任何文件'
         statBadgeEl.textContent = '0 B'
-        injectBtn.disabled = true
-        downloadBtn.disabled = true
+        fileCard.classList.add('dimmed')
+        if (!keepBusyOuter) {
+          innerBusy = false
+          updateBusyUI()
+        }
+        showNotice('未勾选任何文件，无法生成附件', 'warn', '', 2000)
         return null
       }
 
-      const myTaskId = ++taskId
-      processBtn.disabled = true
-      injectBtn.disabled = true
-      downloadBtn.disabled = true
+      if (!keepBusyOuter) {
+        innerBusy = true
+        updateBusyUI()
+      }
+
+      const isZip = prefs.exportMode === 'zip'
+      const stageLabel = isZip ? '正在压缩打包 ZIP...' : '正在合并生成 Markdown...'
+      showProgress(stageLabel, 35, `共 ${selectedItems.length} 个文件`)
+      await nextPaint()
+
+      if (myToken !== repackToken) return null
 
       try {
-        const artifact = await buildArtifact(selectedItems, prefs.exportMode, customFileName, (pct) => {
-          if (myTaskId === taskId) {
-            processBtn.textContent = `⏳ 正在压缩打包 ${pct}%...`
-          }
-        })
+        const artifact = await buildArtifact(
+          selectedItems,
+          prefs.exportMode,
+          customFileName,
+          (pct, curFile) => {
+            if (myToken !== repackToken) return
+            const mappedPct = 35 + Math.round(pct * 0.5)
+            const sub = curFile ? `${curFile} (${pct}%)` : `共 ${selectedItems.length} 个文件 (${pct}%)`
+            showProgress(stageLabel, mappedPct, sub)
+          },
+          () => myToken !== repackToken
+        )
 
-        // 防止异步竞态（打包期间被清空或触发了新任务）
-        if (myTaskId !== taskId) return null
+        if (!artifact || myToken !== repackToken) return null
 
         revokeCurrentUrl()
         currentArtifact = artifact
         currentArtifactUrl = URL.createObjectURL(artifact.blob)
 
-        const isZip = prefs.exportMode === 'zip'
-        const fallbackSuffix = artifact.engine === 'Built-in STORE' ? ' · 内置无压缩' : ''
-        summaryTextEl.textContent = `${isZip ? '还原成功' : '合并完成'} (${selectedItems.length} 个文件${fallbackSuffix})`
+        const suffix = artifact.engine === 'Native STORE' ? ' · 无压缩' : ''
+        summaryTextEl.textContent = `${isZip ? '还原成功' : '合并完成'} (${selectedItems.length} 个文件${suffix})`
         statBadgeEl.textContent = formatBytes(artifact.blob.size)
         nameInputEl.value = artifact.name
-        dragCardIcon.textContent = isZip ? '📦' : '📄'
+        fileCardIcon.textContent = isZip ? '📦' : '📄'
+        fileCard.classList.remove('dimmed')
         resultContainer.style.display = 'flex'
-        injectBtn.disabled = false
-        downloadBtn.disabled = false
         updateAlerts()
+        requestAnimationFrame(() => applyVerticalCenterPosition(panelEl, prefs.panelTopPct, 14))
 
-        if (showSuccessToast) {
-          showToast(`已生成 ${artifact.name} (${formatBytes(artifact.blob.size)})`)
+        if (showSuccessNotice) {
+          showNotice(
+            `已生成 ${artifact.name}`,
+            'success',
+            `${selectedItems.length} 个文件 · ${formatBytes(artifact.blob.size)}`,
+            2200
+          )
         }
         return artifact
       } catch (err) {
-        if (myTaskId === taskId) {
+        if (myToken === repackToken) {
           console.error('[BlockClip] 打包出错:', err)
-          showToast(`生成失败: ${err?.message || String(err)}`, 'error')
+          showNotice('打包生成失败', 'error', err?.message || String(err), 3400)
         }
         return null
       } finally {
-        if (myTaskId === taskId) {
-          processBtn.disabled = false
-          syncModeButtons()
+        if (myToken === repackToken && !keepBusyOuter) {
+          innerBusy = false
+          updateBusyUI()
+          syncModeUI()
         }
       }
     }
 
-    async function processRawText(rawText, showSuccessToast = true) {
+    async function processRawText(rawText, showSuccessNotice = true, keepBusyOuter = false) {
       if (!rawText || !rawText.trim()) {
-        showToast('请先粘贴 BlockClip 导出的文本', 'warn')
+        showNotice('未检测到文本内容', 'warn', '请先粘贴 BlockClip 导出的文本', 2000)
         return null
       }
-
-      const parsed = parseBlockClipText(rawText)
-      if (parsed.length === 0) {
-        showToast('未匹配到 BlockClip 格式（需包含 "File: ..." 与代码块）', 'error')
-        return null
+      if (!keepBusyOuter) {
+        if (busy) {
+          showNotice('正在处理上一个任务，请稍候…', 'warn', '', 1600)
+          return null
+        }
+        setOuterBusy(true)
       }
 
-      const merged = mergeParsedFiles(parsed)
-      for (const item of merged) {
-        if (item.isBinary && prefs.skipBinaryPlaceholders) {
-          item.selected = false
+      try {
+        showProgress('正在解析 BlockClip 代码结构...', 15, `原始文本 ${formatBytes(utf8ByteLength(rawText))}`)
+        await nextPaint()
+
+        const parsed = parseBlockClipText(rawText)
+        if (parsed.length === 0) {
+          showNotice('未匹配到 BlockClip 格式', 'error', '需包含 "File: 路径" 与代码块围栏', 3000)
+          return null
+        }
+
+        showProgress(`已识别 ${parsed.length} 个片段，正在清洗合并...`, 30, '校验路径与敏感文件检测')
+        await nextPaint()
+
+        const merged = mergeParsedFiles(parsed)
+        for (const item of merged) {
+          if (item.isBinary && prefs.skipBinaryPlaceholders) item.selected = false
+        }
+
+        parsedFiles = merged
+        customFileName = ''
+        renderFileTree()
+        return await rebuildCurrentSelection(showSuccessNotice, true)
+      } catch (err) {
+        console.error('[BlockClip] 解析处理出错:', err)
+        showNotice('解析处理失败', 'error', err?.message || String(err), 3200)
+        return null
+      } finally {
+        if (!keepBusyOuter) {
+          setOuterBusy(false)
+          syncModeUI()
         }
       }
-
-      parsedFiles = merged
-      customFileName = ''
-      renderFileTree()
-      return rebuildCurrentSelection(showSuccessToast)
     }
 
     async function runInstantPackAndInject(rawText) {
-      setRawText(rawText)
-      const artifact = await processRawText(rawText, false)
-      if (!artifact) return false
-      return performInject(artifact.file)
+      if (busy) {
+        showNotice('正在处理上一个任务，请稍候…', 'warn', '', 1600)
+        return false
+      }
+      setOuterBusy(true)
+      try {
+        setRawText(rawText)
+        const artifact = await processRawText(rawText, false, true)
+        if (!artifact) return false
+        return await performInjectArtifact(artifact)
+      } catch (err) {
+        console.error('[BlockClip] 秒传出错:', err)
+        showNotice('秒传附件失败', 'error', err?.message || String(err), 3200)
+        return false
+      } finally {
+        setOuterBusy(false)
+        syncModeUI()
+      }
     }
 
     async function runInstantFromClipboard() {
+      if (busy) {
+        showNotice('正在处理上一个任务，请稍候…', 'warn', '', 1600)
+        return false
+      }
+      if (!SITE.findEditor()) {
+        showNotice('未找到主对话输入框', 'error', '请确认当前处于对话或 Playground 页面', 2600)
+        return false
+      }
+      setOuterBusy(true)
       try {
-        const clipText = await navigator.clipboard.readText()
-        if (!clipText || !clipText.trim()) {
-          showToast('剪贴板为空', 'warn')
-          return
+        showProgress('正在读取剪贴板...', 5)
+        await nextPaint()
+        let clipText
+        try {
+          clipText = await readClipboardActive()
+        } catch (err) {
+          console.error('[BlockClip] 剪贴板读取异常:', err)
+          showNotice(
+            IS_FIREFOX ? 'Firefox 剪贴板读取受阻' : '剪贴板访问被拒绝',
+            'error',
+            IS_FIREFOX
+              ? '请开启“聊天框粘贴自动转附件”，直接 Ctrl+V 免弹窗上传'
+              : '请在地址栏左侧允许剪贴板权限，或展开面板后 Ctrl+V',
+            3800
+          )
+          return false
         }
-        await runInstantPackAndInject(clipText)
-      } catch {
-        showToast(
-          IS_FIREFOX
-            ? 'Firefox 禁止静默读剪贴板：请在面板按 Ctrl+V，或开启“聊天框粘贴自动转附件”'
-            : '无法读取剪贴板，请展开面板后按 Ctrl+V',
-          'error',
-          3800
-        )
-        setPanelOpen(true)
+        if (!clipText || !clipText.trim()) {
+          showNotice('剪贴板为空', 'warn', '请先使用 BlockClip 复制代码', 2200)
+          return false
+        }
+        setRawText(clipText)
+        const artifact = await processRawText(clipText, false, true)
+        if (!artifact) return false
+        return await performInjectArtifact(artifact)
+      } catch (err) {
+        console.error('[BlockClip] 一键剪贴板秒传异常:', err)
+        showNotice('一键秒传失败', 'error', err?.message || String(err), 3200)
+        return false
+      } finally {
+        setOuterBusy(false)
+        syncModeUI()
       }
     }
 
@@ -2950,29 +2895,29 @@
       {
         type: 'button',
         className: 'bc-btn-primary',
-        onClick: async () => {
-          await processRawText(getActiveRawText(), true)
-        }
+        onClick: async () => await processRawText(getActiveRawText(), true)
       },
       '⚡ 还原层级并打包 ZIP'
     )
 
-    /* ------------------------- 面板组装与事件防穿透 ------------------------- */
+    const panelHeaderEl = safeEl(
+      'div',
+      { className: 'bc-header', title: '按住标题栏可上下拖动面板位置' },
+      safeEl(
+        'div',
+        { className: 'bc-title-wrap' },
+        safeEl('span', { className: 'bc-drag-hint' }, '⋮⋮'),
+        safeEl('span', { className: 'bc-title' }, '📦 BlockClip to ZIP'),
+        safeEl('span', { className: 'bc-tag' }, IS_AISTUDIO ? 'AI Studio' : 'Gemini'),
+        safeEl('span', { style: { fontSize: '10.5px', opacity: '0.65' } }, 'v3.1.1')
+      ),
+      safeEl('div', { className: 'bc-actions' }, settingsBtn, clearBtn, closeBtn)
+    )
 
     const panelEl = safeEl(
       'div',
       { className: 'bc-panel hidden' },
-      safeEl(
-        'div',
-        { className: 'bc-header' },
-        safeEl(
-          'div',
-          { className: 'bc-title-wrap' },
-          safeEl('span', { className: 'bc-title' }, '📦 BlockClip to ZIP'),
-          safeEl('span', { className: 'bc-tag' }, IS_AISTUDIO ? 'AI Studio' : 'Gemini')
-        ),
-        safeEl('div', { className: 'bc-actions' }, settingsBtn, clearBtn, closeBtn)
-      ),
+      panelHeaderEl,
       safeEl(
         'div',
         { className: 'bc-body' },
@@ -2980,8 +2925,14 @@
         safeEl(
           'div',
           { className: 'bc-toolbar' },
-          safeEl('div', { className: 'bc-mode-switch' }, modeZipBtn, modeMdBtn),
+          safeEl('div', { className: 'bc-seg' }, modeZipBtn, modeMdBtn),
           instantClipboardBtn
+        ),
+        safeEl(
+          'div',
+          { className: 'bc-delivery-row' },
+          safeEl('span', {}, '附件投递模式'),
+          safeEl('div', { className: 'bc-seg' }, deliveryBtns)
         ),
         safeEl(
           'div',
@@ -2991,26 +2942,32 @@
           textareaEl
         ),
         processBtn,
+        inlineProgBox,
         resultContainer,
         safeEl(
           'div',
           { className: 'bc-footer-hint' },
-          IS_FIREFOX
-            ? '提示：Firefox 建议开启设置中的“聊天框粘贴自动转附件”，直接 Ctrl+V 免弹窗上传'
-            : '提示：右键悬浮球或按 Alt+Shift+Z 可不弹窗一键打包并上传'
+          '快捷键：Alt+B 开关面板 · Alt+Shift+Z 秒传 · 标题栏/侧边标签可上下拖动'
         )
       )
     )
 
-    // 阻止面板内按键冒泡到 Gemini / AI Studio 宿主快捷键系统
-    for (const evType of ['keydown', 'keyup', 'keypress']) {
+    attachVerticalDrag(sideTabBtn, sideTabBtn, 'sideTabTopPct', { marginPx: 12 })
+    attachVerticalDrag(panelHeaderEl, panelEl, 'panelTopPct', {
+      ignoreSelector: 'button, input, textarea, a, label',
+      marginPx: 14
+    })
+
+    for (const evType of ['paste', 'keydown', 'keyup', 'keypress', 'input']) {
       panelEl.addEventListener(evType, (e) => {
-        if (evType === 'keydown' && e.key === 'Escape') {
-          e.stopPropagation()
-          if (e.isComposing || e.keyCode === 229) return
-          cleanupDragBridge()
-          setPanelOpen(false)
-          return
+        if (evType === 'keydown') {
+          if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+            if (shadow.activeElement === nameInputEl) return
+            e.preventDefault()
+            e.stopPropagation()
+            processRawText(getActiveRawText(), true)
+            return
+          }
         }
         e.stopPropagation()
       })
@@ -3020,98 +2977,397 @@
       isOpen = Boolean(nextOpen)
       if (isOpen) {
         syncTheme()
-        positionPanelSmart()
         panelEl.classList.remove('hidden')
-        requestAnimationFrame(() => textareaEl.focus({ preventScroll: true }))
+        sideTabBtn.classList.add('hidden')
+        requestAnimationFrame(() => {
+          applyVerticalCenterPosition(panelEl, prefs.panelTopPct, 14)
+          textareaEl.focus({ preventScroll: true })
+        })
       } else {
         panelEl.classList.add('hidden')
+        sideTabBtn.classList.remove('hidden')
+        requestAnimationFrame(() => applyVerticalCenterPosition(sideTabBtn, prefs.sideTabTopPct, 12))
       }
     }
 
-    function togglePanel() {
-      setPanelOpen(!isOpen)
+    function styleInlineBtn(btn) {
+      Object.assign(btn.style, {
+        display: 'inline-flex',
+        alignItems: 'center',
+        alignSelf: 'center',
+        gap: '4px',
+        height: '28px',
+        padding: '0 10px',
+        margin: '0 4px',
+        backgroundColor: 'rgba(59, 130, 246, 0.14)',
+        color: 'inherit',
+        border: '1px solid rgba(59, 130, 246, 0.36)',
+        borderRadius: '999px',
+        font: 'inherit',
+        fontSize: '12px',
+        fontWeight: '500',
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
+        lineHeight: '1',
+        flex: '0 0 auto',
+        transition: 'background-color 0.12s ease, opacity 0.12s ease, border-color 0.12s ease',
+        userSelect: 'none',
+        opacity: busy ? '0.5' : '0.88'
+      })
+      btn.onmouseenter = () => {
+        if (busy) return
+        btn.style.opacity = '1'
+        btn.style.backgroundColor = 'rgba(59, 130, 246, 0.24)'
+        btn.style.borderColor = 'rgba(59, 130, 246, 0.55)'
+      }
+      btn.onmouseleave = () => {
+        btn.style.backgroundColor = 'rgba(59, 130, 246, 0.14)'
+        btn.style.borderColor = 'rgba(59, 130, 246, 0.36)'
+        btn.style.opacity = busy ? '0.5' : '0.88'
+      }
     }
 
-    /* ------------------------- 全局快捷键 & 聊天框智能粘贴感知 ------------------------- */
+    function styleFloatingBtn(btn) {
+      Object.assign(btn.style, {
+        position: 'fixed',
+        right: '24px',
+        top: `${prefs.floatingBtnTopPct}%`,
+        transform: 'translateY(-50%)',
+        zIndex: '2147483645',
+        height: '34px',
+        padding: '0 14px',
+        backgroundColor: '#2563eb',
+        color: '#ffffff',
+        border: 'none',
+        borderRadius: '999px',
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        fontSize: '13px',
+        fontWeight: '600',
+        cursor: 'grab',
+        boxShadow: '0 4px 14px rgba(37, 99, 235, 0.32)',
+        userSelect: 'none',
+        touchAction: 'none',
+        opacity: busy ? '0.5' : '1'
+      })
+      btn.title = '上下拖动可调整位置 · 点击将剪贴板 BlockClip 秒传为附件 (Alt+Shift+Z)'
+      attachVerticalDrag(btn, btn, 'floatingBtnTopPct', { marginPx: 14 })
+    }
+
+    function createInlineButton() {
+      const btn = safeEl(
+        'button',
+        {
+          id: INLINE_BTN_ID,
+          type: 'button',
+          title: '将剪贴板中的 BlockClip 代码一键打包并秒传为附件 (快捷键: Alt+Shift+Z | 面板: Alt+B)'
+        },
+        prefs.exportMode === 'zip' ? '📦 粘贴为ZIP' : '📄 粘贴为MD'
+      )
+      btn.addEventListener('click', (e) => {
+        if (btn.dataset.bcSuppressClick === '1') return
+        e.preventDefault()
+        e.stopPropagation()
+        runInstantFromClipboard()
+      })
+      return btn
+    }
+
+    function usableSlot() {
+      const slot = SITE.findSlot()
+      if (!slot || !isVisibleOnce(slot.parent)) return null
+      if (failedSlotParent && failedSlotParent === slot.parent && failedSlotParent.isConnected) {
+        const cooldown = Math.min(
+          FAILED_SLOT_MAX_COOLDOWN_MS,
+          FAILED_SLOT_BASE_COOLDOWN_MS * 2 ** Math.min(failedSlotCount - 1, 5)
+        )
+        if (Date.now() - failedSlotAt < cooldown) return null
+      } else if (failedSlotParent && failedSlotParent !== slot.parent) {
+        failedSlotParent = null
+        failedSlotAt = 0
+        failedSlotCount = 0
+      }
+      return slot
+    }
+
+    function ensureMounts(verifyVisibility = false) {
+      const mountParent = document.body || document.documentElement
+      if (hostEl && mountParent && !hostEl.isConnected) mountParent.appendChild(hostEl)
+
+      if (cachedInlineBtn?.isConnected && cachedInlineBtn.dataset.floating !== '1') {
+        if (!verifyVisibility || isVisibleOnce(cachedInlineBtn)) return
+        cachedInlineBtn.remove()
+        cachedInlineBtn = null
+      }
+
+      const editor = SITE.findEditor()
+      if (!editor) {
+        if (cachedInlineBtn && cachedInlineBtn.dataset.floating === '1') {
+          cachedInlineBtn.remove()
+          cachedInlineBtn = null
+        }
+        return
+      }
+
+      const existing = cachedInlineBtn?.isConnected ? cachedInlineBtn : document.getElementById(INLINE_BTN_ID)
+      let slot = null
+
+      if (existing) {
+        if (existing.dataset.floating === '1') {
+          slot = usableSlot()
+          if (!slot) {
+            cachedInlineBtn = existing
+            return
+          }
+          const probe = createInlineButton()
+          const before = slot.before && slot.before.parentElement === slot.parent ? slot.before : null
+          styleInlineBtn(probe)
+          slot.parent.insertBefore(probe, before)
+          if (isVisibleOnce(probe)) {
+            existing.remove()
+            failedSlotParent = null
+            failedSlotAt = 0
+            failedSlotCount = 0
+            cachedInlineBtn = probe
+            return
+          }
+          probe.remove()
+          failedSlotParent = slot.parent
+          failedSlotAt = Date.now()
+          failedSlotCount += 1
+          cachedInlineBtn = existing
+          return
+        } else if (isVisibleOnce(existing)) {
+          cachedInlineBtn = existing
+          return
+        }
+        existing.remove()
+      }
+
+      if (!slot) slot = usableSlot()
+      const btn = createInlineButton()
+
+      if (slot) {
+        const before = slot.before && slot.before.parentElement === slot.parent ? slot.before : null
+        styleInlineBtn(btn)
+        slot.parent.insertBefore(btn, before)
+        if (isVisibleOnce(btn)) {
+          failedSlotParent = null
+          failedSlotAt = 0
+          failedSlotCount = 0
+          cachedInlineBtn = btn
+          return
+        }
+        btn.remove()
+        failedSlotCount = failedSlotParent === slot.parent ? failedSlotCount + 1 : 1
+        failedSlotParent = slot.parent
+        failedSlotAt = Date.now()
+      }
+
+      styleFloatingBtn(btn)
+      btn.dataset.floating = '1'
+      if (mountParent) {
+        mountParent.appendChild(btn)
+        applyVerticalCenterPosition(btn, prefs.floatingBtnTopPct, 14)
+        cachedInlineBtn = btn
+      }
+    }
+
+    function isEventFromHost(e) {
+      if (!hostEl) return false
+      if (e.target === hostEl || e.target === unwrap(hostEl)) return true
+      try {
+        if (e.composedPath) {
+          const path = e.composedPath()
+          if (path.includes(hostEl) || path.includes(unwrap(hostEl))) return true
+        }
+      } catch {}
+      return e.target instanceof Node && hostEl.contains(e.target)
+    }
 
     window.addEventListener(
       'keydown',
       (e) => {
+        if (e.repeat) return
+        if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.code === 'KeyB' || e.key.toLowerCase() === 'b')) {
+          e.preventDefault()
+          e.stopPropagation()
+          setPanelOpen(!isOpen)
+          return
+        }
         if (e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && (e.code === 'KeyZ' || e.key.toLowerCase() === 'z')) {
           e.preventDefault()
+          e.stopPropagation()
           runInstantFromClipboard()
-        } else if (e.key === 'Escape') {
-          if (e.isComposing || e.keyCode === 229) return
-          cleanupDragBridge()
+          return
+        }
+        if (e.key === 'Escape' && isOpen) {
+          if (e.isComposing || e.key === 'Process') return
           if (shadow.activeElement === nameInputEl) return
-          if (isOpen) {
-            e.stopPropagation()
-            setPanelOpen(false)
-          }
+          e.preventDefault()
+          e.stopPropagation()
+          setPanelOpen(false)
         }
       },
       true
     )
 
-    // 防止拖拽中途切窗导致面板停留在透明穿透状态
-    window.addEventListener('blur', cleanupDragBridge)
-
-    // 监听用户在 Gemini / AI Studio 聊天框直接粘贴 BlockClip 多文件文本
-    document.addEventListener(
+    window.addEventListener(
       'paste',
       (e) => {
-        const path = typeof e.composedPath === 'function' ? e.composedPath() : [e.target]
-        if (path.includes(hostEl)) return
-        // 仅当粘贴内容不含文件且属于多文件 BlockClip 文本时介入
+        if (isDispatchingSynthetic || !e.isTrusted || isEventFromHost(e)) return
         const cd = e.clipboardData
         if (!cd || (cd.files && cd.files.length > 0)) return
         const text = cd.getData('text/plain')
-        if (!looksLikeMultiFileBlockClip(text)) return
+        const probe = estimateBlockClipForChat(text)
+        if (!probe.match) return
 
-        const parsed = parseBlockClipText(text)
-        if (parsed.length < 2) return
+        const editor = SITE.findEditor()
+        if (!editor) return
+        const active = document.activeElement
+        const target = e.target
+        const inEditor =
+          editor === active ||
+          editor === target ||
+          (active && editor.contains(active)) ||
+          (target instanceof Node && editor.contains(target))
+        if (!inEditor) return
 
         if (prefs.autoInterceptChatPaste) {
           e.preventDefault()
+          e.stopPropagation()
           e.stopImmediatePropagation()
           runInstantPackAndInject(text)
         } else {
-          // 在粘贴当下解析稳定的编辑器根节点，避免 Quill 重建内部 <p> 节点导致 target.isConnected 失效
-          const rawEl = (path[0] && path[0].nodeType === 1 ? path[0] : e.target?.parentElement) || e.target
-          const stableTarget =
-            rawEl?.closest?.(
-              'textarea, input, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]'
-            ) || rawEl
-          showPastePill(parsed.length, text, stableTarget)
+          showPastePill(probe.estimatedFiles, text, editor)
         }
       },
       true
     )
 
+    function syncAllVerticalPositions() {
+      applyVerticalCenterPosition(sideTabBtn, prefs.sideTabTopPct, 12)
+      if (isOpen) applyVerticalCenterPosition(panelEl, prefs.panelTopPct, 14)
+      if (cachedInlineBtn?.isConnected && cachedInlineBtn.dataset.floating === '1') {
+        applyVerticalCenterPosition(cachedInlineBtn, prefs.floatingBtnTopPct, 14)
+      }
+    }
+
     window.addEventListener('resize', () => {
-      applyFloatPosition()
+      requestAnimationFrame(syncAllVerticalPositions)
     })
 
-    window.addEventListener('beforeunload', () => {
-      cleanupDragBridge()
-      window.removeEventListener('blur', cleanupDragBridge)
-      revokeCurrentUrl()
-      keepAliveObserver.disconnect()
+    let checkQueued = false
+    let lastCheckTime = 0
+    let observersActive = false
+
+    const domObserver = new MutationObserver(() => {
+      if (cachedInlineBtn?.isConnected && cachedInlineBtn.dataset.floating !== '1' && hostEl.isConnected) return
+      if (checkQueued) return
+      checkQueued = true
+      const elapsed = performance.now() - lastCheckTime
+      const delay = elapsed >= OBSERVER_THROTTLE_MS ? 0 : OBSERVER_THROTTLE_MS - elapsed
+      setTimeout(() => {
+        requestAnimationFrame(() => {
+          checkQueued = false
+          lastCheckTime = performance.now()
+          ensureMounts(false)
+        })
+      }, delay)
     })
 
-    // 挂载并初始化位置与状态
-    shadow.appendChild(toastEl)
+    const themeObserver = new MutationObserver(() => {
+      scheduleSyncTheme()
+    })
+
+    const colorSchemeMedia = window.matchMedia?.('(prefers-color-scheme: dark)')
+    colorSchemeMedia?.addEventListener?.('change', scheduleSyncTheme)
+
+    let sweepTimer = null
+
+    function startObservers() {
+      if (observersActive) return
+      observersActive = true
+      if (document.body) {
+        domObserver.observe(document.body, { childList: true, subtree: true })
+        themeObserver.observe(document.body, {
+          attributes: true,
+          attributeFilter: ['class', 'style', 'data-theme', 'data-color-scheme']
+        })
+      }
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-theme', 'data-color-scheme']
+      })
+      if (!sweepTimer) {
+        sweepTimer = setInterval(() => {
+          if (document.visibilityState === 'visible') ensureMounts(true)
+        }, SWEEP_MS)
+      }
+    }
+
+    function stopObservers() {
+      observersActive = false
+      domObserver.disconnect()
+      themeObserver.disconnect()
+      if (sweepTimer) {
+        clearInterval(sweepTimer)
+        sweepTimer = null
+      }
+    }
+
+    startObservers()
+
+    window.addEventListener(
+      'pagehide',
+      (e) => {
+        clearAllResiduals()
+        stopObservers()
+        if (!e.persisted) revokeCurrentUrl()
+      },
+      true
+    )
+
+    window.addEventListener(
+      'pageshow',
+      () => {
+        if (!busy) clearAllResiduals()
+        startObservers()
+        syncTheme()
+        ensureMounts(true)
+        syncAllVerticalPositions()
+      },
+      true
+    )
+
+    window.addEventListener(
+      'popstate',
+      () => {
+        if (!busy) clearAllResiduals()
+        ensureMounts(true)
+      },
+      true
+    )
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        if (!busy) clearAllResiduals()
+        startObservers()
+        syncTheme()
+        ensureMounts(true)
+        syncAllVerticalPositions()
+      }
+    })
+
+    shadow.appendChild(hudEl)
     shadow.appendChild(pastePillEl)
     shadow.appendChild(panelEl)
-    shadow.appendChild(floatBtn)
+    shadow.appendChild(sideTabBtn)
 
-    syncModeButtons()
-    applyFloatPosition()
+    syncModeUI()
+    ensureMounts(true)
+    requestAnimationFrame(syncAllVerticalPositions)
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initApp, { once: true })
-  } else {
-    initApp()
-  }
+  if (document.body) boot()
+  else document.addEventListener('DOMContentLoaded', boot, { once: true })
 })()
