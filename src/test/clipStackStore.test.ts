@@ -163,6 +163,40 @@ describe('ClipStackStore', () => {
     assert.strictEqual(res.content, '')
   })
 
+  it('handles content-detected binary files without emitting NUL bytes', async () => {
+    const store = new ClipStackStore()
+    store.addItem({
+      id: '1',
+      fsPath: '/proj/.plugin/cache_data',
+      relativePath: '.plugin/cache_data',
+      language: 'plaintext',
+      isSnippet: false,
+      previewText: 'cache_data',
+      addedAt: 1
+    })
+    store.addItem({
+      id: '2',
+      fsPath: '/proj/src/index.ts',
+      relativePath: 'src/index.ts',
+      language: 'typescript',
+      isSnippet: false,
+      previewText: 'index.ts',
+      addedAt: 2
+    })
+
+    const res = await store.formatAll(async (item) => {
+      if (item.fsPath.includes('cache_data')) {
+        return { status: 'binary' }
+      }
+      return { status: 'ok', content: 'export const x = "a\u0000b";' }
+    })
+
+    assert.strictEqual(res.processedCount, 2)
+    assert.ok(res.content.includes('File: .plugin/cache_data\n'))
+    assert.ok(res.content.includes('File: src/index.ts'))
+    assert.strictEqual(res.content.includes('\u0000'), false)
+  })
+
   it('formats mixed files and snippets and respects max length limit', async () => {
     const store = new ClipStackStore()
     store.addItem({

@@ -52,7 +52,7 @@ class CopyFolderCodeAction : AnAction(), DumbAware {
                 indicator.isIndeterminate = true
                 try {
                     val projectBaseDir = project?.basePath?.let { File(it) }
-                    val files = GitIgnoreFilter.collectAllFiles(folder, projectBaseDir, indicator)
+                    val files = GitIgnoreFilter.collectAllFiles(folder, projectBaseDir, indicator, project)
 
                     if (files.isEmpty()) {
                         notify(

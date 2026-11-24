@@ -61,6 +61,29 @@ export const binaryFileExtensions = new Set([
   'ttf',
   'otf',
   'eot',
+  'db',
+  'sqlite',
+  'sqlite3',
+  'bin',
+  'dat',
+  'ldb',
+  'sst',
+  'wal',
+  'shm',
+  'idx',
+  'pack',
+  'wasm',
+  'node',
+  'pyc',
+  'pyo',
+  'o',
+  'a',
+  'lib',
+  'pdb',
+  'hprof',
+  'parquet',
+  'avro',
+  'pb',
   'lockb',
   'ds_store'
 ])
@@ -137,6 +160,27 @@ export function normalizePathKey(filePath: string, isCaseInsensitive: boolean = 
 export function isBinaryFile(filePath: string): boolean {
   const extension = path.extname(filePath).substring(1).toLowerCase()
   return binaryFileExtensions.has(extension)
+}
+
+/**
+ * 与 Git 相同的内容级二进制探测：扫描前 sampleSize（默认 8KB）字节中是否包含 NUL (0x00) 空字节。
+ * 彻底识别无扩展名或未知后缀的数据/数据库/缓存文件，防止写入系统剪贴板时触发 NUL 截断。
+ */
+export function isBinaryBuffer(bytes: Uint8Array, sampleSize = 8192): boolean {
+  const limit = Math.min(bytes.length, sampleSize)
+  for (let i = 0; i < limit; i++) {
+    if (bytes[i] === 0) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * 写入系统剪贴板前的兜底清洗：移除任何 NUL (\0) 字符，防止 Windows CF_UNICODETEXT 剪贴板截断后续文本。
+ */
+export function sanitizeForClipboard(text: string): string {
+  return text.includes('\u0000') ? text.split('\u0000').join('') : text
 }
 
 /**

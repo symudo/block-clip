@@ -1,6 +1,7 @@
+import * as fs from 'node:fs/promises'
 import * as vscode from 'vscode'
 import { ClipStackStore, type FormatAllResult, type StackEntry } from './clipStackStore'
-import { normalizePathKey } from './formatter'
+import { isBinaryBuffer, normalizePathKey } from './formatter'
 
 export interface ClipItem extends StackEntry {
   uri: vscode.Uri
@@ -79,10 +80,32 @@ export class ClipStackManager {
     }
   }
 
+  private async isFileHeaderBinary(fileUri: vscode.Uri, sampleSize = 8192): Promise<boolean> {
+    if (fileUri.scheme !== 'file') {
+      return false
+    }
+    let handle: fs.FileHandle | undefined
+    try {
+      handle = await fs.open(fileUri.fsPath, 'r')
+      const buffer = Buffer.alloc(sampleSize)
+      const { bytesRead } = await handle.read(buffer, 0, sampleSize, 0)
+      return isBinaryBuffer(buffer.subarray(0, bytesRead), sampleSize)
+    } catch {
+      return false
+    } finally {
+      await handle?.close().catch(() => {})
+    }
+  }
+
   public async formatAll(maxLength?: number): Promise<FormatAllResult> {
     return this.store.formatAll(async (item, remainingBudget) => {
+      const targetUriStr = item.uri.toString()
       const targetKey = normalizePathKey(item.uri.fsPath)
-      const openDoc = vscode.workspace.textDocuments.find((d) => normalizePathKey(d.uri.fsPath) === targetKey)
+      const openDoc = vscode.workspace.textDocuments.find(
+        (d) =>
+          d.uri.toString() === targetUriStr ||
+          (d.uri.scheme === item.uri.scheme && normalizePathKey(d.uri.fsPath) === targetKey)
+      )
       if (openDoc) {
         const text = openDoc.getText()
         if (text.length > remainingBudget) {
@@ -95,10 +118,16 @@ export class ClipStackManager {
       }
       try {
         const stat = await vscode.workspace.fs.stat(item.uri)
+        if (stat.size > 8192 && (await this.isFileHeaderBinary(item.uri))) {
+          return { status: 'binary' }
+        }
         if (stat.size > remainingBudget) {
           return { status: 'too_large' }
         }
         const bytes = await vscode.workspace.fs.readFile(item.uri)
+        if (isBinaryBuffer(bytes)) {
+          return { status: 'binary' }
+        }
         return { status: 'ok', content: Buffer.from(bytes).toString('utf8') }
       } catch {
         return { status: 'missing' }

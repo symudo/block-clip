@@ -1,4 +1,4 @@
-import { formatFileBlock, isBinaryFile, MAX_CONTENT_LENGTH, normalizePathKey } from './formatter'
+import { formatFileBlock, isBinaryFile, MAX_CONTENT_LENGTH, normalizePathKey, sanitizeForClipboard } from './formatter'
 
 export interface StackEntry {
   id: string
@@ -12,7 +12,11 @@ export interface StackEntry {
   addedAt: number
 }
 
-export type FileReadResult = { status: 'ok'; content: string } | { status: 'missing' } | { status: 'too_large' }
+export type FileReadResult =
+  | { status: 'ok'; content: string }
+  | { status: 'binary' }
+  | { status: 'missing' }
+  | { status: 'too_large' }
 
 export interface FormatAllResult {
   content: string
@@ -93,7 +97,10 @@ export class ClipStackStore<T extends StackEntry = StackEntry> {
           stoppedEarly = true
           break
         }
-        block = formatFileBlock(item.relativePath, item.language, readResult.content, item.lineRange)
+        block =
+          readResult.status === 'binary'
+            ? `File: ${item.relativePath}\n`
+            : formatFileBlock(item.relativePath, item.language, readResult.content, item.lineRange)
       }
 
       if (currentLength + block.length > maxLength) {
@@ -108,7 +115,7 @@ export class ClipStackStore<T extends StackEntry = StackEntry> {
       currentLength += block.length
     }
 
-    const finalContent = formattedBlocks.join('\n\n---\n\n')
+    const finalContent = sanitizeForClipboard(formattedBlocks.join('\n\n---\n\n'))
     return {
       content: finalContent,
       processedCount: formattedBlocks.length,

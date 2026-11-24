@@ -1,6 +1,11 @@
 package com.symudo.blockclip
 
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VirtualFile
 import java.io.File
 
@@ -148,17 +153,58 @@ class GitIgnoreFilter(private val rootDir: File, includeDefaults: Boolean = true
     }
 
     companion object {
+        private fun isProjectExcluded(file: VirtualFile, project: Project?): Boolean {
+            if (ApplicationManager.getApplication() == null || project == null || project.isDisposed) {
+                return false
+            }
+            return try {
+                ReadAction.compute<Boolean, Throwable> {
+                    file.isValid && ProjectFileIndex.getInstance(project).isExcluded(file)
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
+
+        private fun isHiddenOrExcludedInIde(
+            child: VirtualFile,
+            project: Project?,
+            skipProjectExcluded: Boolean
+        ): Boolean {
+            if (ApplicationManager.getApplication() == null) return false
+            return try {
+                ReadAction.compute<Boolean, Throwable> {
+                    if (!child.isValid) return@compute true
+                    if (FileTypeManager.getInstance().isFileIgnored(child)) return@compute true
+                    if (project != null && !project.isDisposed) {
+                        val fileIndex = ProjectFileIndex.getInstance(project)
+                        if (fileIndex.isUnderIgnored(child)) {
+                            return@compute true
+                        }
+                        if (skipProjectExcluded && fileIndex.isExcluded(child)) {
+                            return@compute true
+                        }
+                    }
+                    false
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
+
         fun collectAllFiles(
             folder: VirtualFile,
             projectBaseDir: File?,
-            indicator: ProgressIndicator? = null
+            indicator: ProgressIndicator? = null,
+            project: Project? = null
         ): List<VirtualFile> {
             val folderFile = File(folder.path)
             val filters = mutableListOf<GitIgnoreFilter>()
 
-            // 1. 构建多层级过滤器链：每个 .gitignore 以其自身所在目录为基准，修复根目录带路径前缀规则错位问题
+            // 1. 构建多层级过滤器链：每个 .gitignore 以其自身所在目录为基准，同时读取 .git/info/exclude
             if (projectBaseDir != null && projectBaseDir.exists()) {
                 val rootFilter = GitIgnoreFilter(projectBaseDir, includeDefaults = true)
+                rootFilter.loadGitIgnore(File(projectBaseDir, ".git/info/exclude"))
                 rootFilter.loadGitIgnore(File(projectBaseDir, ".gitignore"))
                 filters.add(rootFilter)
 
@@ -183,13 +229,16 @@ class GitIgnoreFilter(private val rootDir: File, includeDefaults: Boolean = true
                 }
             } else {
                 val localFilter = GitIgnoreFilter(folderFile, includeDefaults = true)
+                localFilter.loadGitIgnore(File(folderFile, ".git/info/exclude"))
                 localFilter.loadGitIgnore(File(folderFile, ".gitignore"))
                 filters.add(localFilter)
             }
 
+            // 若用户主动右键复制了一个本身被标为 Excluded 的目录，则不再因父级排除状态将其子文件过滤为空
+            val skipProjectExcluded = !isProjectExcluded(folder, project)
             val result = mutableListOf<VirtualFile>()
             val visitedDirs = mutableSetOf<String>()
-            traverse(folder, filters, result, visitedDirs, indicator)
+            traverse(folder, filters, result, visitedDirs, indicator, project, skipProjectExcluded)
             return result
         }
 
@@ -198,7 +247,9 @@ class GitIgnoreFilter(private val rootDir: File, includeDefaults: Boolean = true
             filters: List<GitIgnoreFilter>,
             result: MutableList<VirtualFile>,
             visitedDirs: MutableSet<String>,
-            indicator: ProgressIndicator?
+            indicator: ProgressIndicator?,
+            project: Project?,
+            skipProjectExcluded: Boolean
         ) {
             indicator?.checkCanceled()
             val canonicalKey = try {
@@ -225,11 +276,15 @@ class GitIgnoreFilter(private val rootDir: File, includeDefaults: Boolean = true
             val children = dir.children ?: return
             for (child in children) {
                 indicator?.checkCanceled()
+                // 尊重 IDE 目录树中的忽略与排除目录（例如插件生成并隐藏的数据/日志目录）
+                if (isHiddenOrExcludedInIde(child, project, skipProjectExcluded)) {
+                    continue
+                }
                 if (activeFilters.any { it.isIgnored(child) }) {
                     continue
                 }
                 if (child.isDirectory) {
-                    traverse(child, activeFilters, result, visitedDirs, indicator)
+                    traverse(child, activeFilters, result, visitedDirs, indicator, project, skipProjectExcluded)
                 } else {
                     if (!MarkdownFormatter.isSensitiveFile(child.name)) {
                         result.add(child)

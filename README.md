@@ -13,7 +13,7 @@
 ## ✨ 核心特性
 
 - **多处右键直达 & 选区直接复制**：
-  - **项目文件树右键**：支持单文件、多文件批量选择、以及文件夹递归复制代码。
+  - **项目文件树右键**：支持单文件、多文件批量选择、以及文件夹递归复制代码（VS Code 亦支持在资源管理器空白处右键或通过命令面板一键复制工作区根目录）。
   - **编辑器文件标签页（Tab）右键**：快速复制当前已打开文件的代码。
   - **代码编辑区内任意位置右键**：选中文本时可直接“复制选中代码”（带路径与精确行号），未选中时一键复制整文件。
 - **代码暂存栈（Clip Stack，支持文件 / 文件夹 / 选中片段）**：
@@ -26,10 +26,10 @@
 - **智能 Markdown 包裹 & 体积/Token 估算**：
   - 自动识别文件语言（JavaScript, TypeScript, Python, Rust, Go, Java, Kotlin, C/C++, HTML, CSS, Vue, Svelte, YAML 等）。
   - **自适应反引号防截断**：自动根据代码内部连续反引号数量增加外层反引号，防止输出至 Markdown 时语法断裂。
-  - **二进制与敏感文件保护**：二进制文件仅输出路径标识；文件夹递归扫描默认排除 `.env`、密钥证书（同时保留 `.env.example` / `.env.sample` / `.env.template` 安全模板）。
+  - **二进制与敏感文件保护**：结合扩展名与内容级前 8KB 空字节（NUL）探测，自动识别未知后缀的二进制/数据库/缓存文件并仅输出路径标识，防止 Windows 剪贴板截断；文件夹递归扫描默认排除 `.env`、密钥证书（同时保留 `.env.example` / `.env.sample` / `.env.template` 安全模板）。
   - **体积与 Token 估算**：每次复制反馈均展示总大小与粗略 Token 数量，方便把控 AI 上下文预算。
-- **文件夹递归与 .gitignore 规则级联**：
-  - 智能级联读取项目根目录、中间目录及子目录的 `.gitignore` 过滤规则。
+- **文件夹递归与 .gitignore / IDE 忽略规则级联**：
+  - 智能级联读取项目根目录、中间目录及子目录的 `.gitignore` 与 `.git/info/exclude` 规则，并自动尊重 IDE 隐藏/排除目录（JetBrains Excluded/Ignored 目录、VS Code `files.exclude`）。
   - 默认忽略 `.git`、`node_modules`、`dist`、`build`、`.idea`、`.vscode` 等目录。
   - **自定义大小上限保护**：默认上限 **50 MB**，支持在设置中自由调整（设为 `0` 表示无限制）：
     - **VS Code**：设置搜索 `blockClip.maxContentSizeMB`

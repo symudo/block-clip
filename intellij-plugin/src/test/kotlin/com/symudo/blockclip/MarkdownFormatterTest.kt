@@ -112,4 +112,14 @@ class MarkdownFormatterTest {
         assertEquals(Long.MAX_VALUE, MarkdownFormatter.resolveMaxContentLength(0))
         assertEquals(Long.MAX_VALUE, MarkdownFormatter.resolveMaxContentLength(-10))
     }
+
+    @Test
+    fun testBinaryBytesDetectionAndClipboardSanitization() {
+        assertTrue(MarkdownFormatter.isBinaryBytes("SQLite format 3\u0000header".toByteArray(Charsets.UTF_8)))
+        assertTrue(MarkdownFormatter.isBinaryBytes(byteArrayOf(0x41, 0x42, 0x00, 0x43)))
+        assertFalse(MarkdownFormatter.isBinaryBytes("fun main() { println(\"你好世界\") }".toByteArray(Charsets.UTF_8)))
+
+        assertEquals("abcdef", MarkdownFormatter.sanitizeForClipboard("abc\u0000def"))
+        assertEquals("clean", MarkdownFormatter.sanitizeForClipboard("clean"))
+    }
 }

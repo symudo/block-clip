@@ -11,6 +11,7 @@
   "Code copied: {0} [{1}]": "代码已复制: {0} [{1}]",
   "Failed to copy file content: {0}": "复制文件内容失败: {0}",
   "Cannot get folder path. Please use from the file explorer.": "无法获取文件夹路径，请从侧边栏文件管理器中使用。",
+  "Select a workspace root folder to copy": "选择要复制的工作区根目录",
   "Cannot determine the workspace folder.": "无法确定工作区。",
   "The selected folder is empty or contains no copyable files.": "所选文件夹为空或不包含任何可复制的文件。",
   "Copied {1} item(s) from folder '{0}' [{2}]. Some files were skipped due to size limits.": "已复制 {0} 文件夹中 {1} 个项目 [{2}]。因总大小超出限制，部分文件未被处理。",

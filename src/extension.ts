@@ -9,10 +9,12 @@ import {
   formatLineRange,
   formatStats,
   getLanguage,
+  isBinaryBuffer,
   isBinaryFile,
   isSensitiveFile,
   normalizePathKey,
-  resolveMaxContentLength
+  resolveMaxContentLength,
+  sanitizeForClipboard
 } from './formatter'
 
 interface ScopedIgnore {
@@ -73,6 +75,34 @@ async function readGitIgnoreScope(dirUri: vscode.Uri, includeDefaults = false): 
   if (includeDefaults) {
     ig.add(DEFAULT_IGNORES)
     hasRules = true
+
+    // 尊重 VS Code 侧边栏资源管理器隐藏规则（files.exclude），逐条加载防止单条异常模式拖垮整组规则
+    try {
+      const filesExclude = vscode.workspace.getConfiguration('files', dirUri).get<Record<string, boolean>>('exclude')
+      if (filesExclude && typeof filesExclude === 'object') {
+        for (const [rawPattern, enabled] of Object.entries(filesExclude)) {
+          if (enabled !== true) continue
+          const pattern = rawPattern.trim()
+          if (pattern.length === 0 || pattern.startsWith('!')) continue
+          try {
+            ig.add(pattern)
+          } catch {
+            // 忽略 ignore 库不识别的特殊 glob 模式
+          }
+        }
+      }
+    } catch {
+      // 忽略配置读取异常
+    }
+
+    // 同步读取 .git/info/exclude（本地私有忽略规则）
+    try {
+      const gitExcludeUri = vscode.Uri.joinPath(dirUri, '.git', 'info', 'exclude')
+      const bytes = await vscode.workspace.fs.readFile(gitExcludeUri)
+      ig.add(Buffer.from(bytes).toString('utf8'))
+    } catch {
+      // 无 .git/info/exclude 时静默处理
+    }
   }
 
   try {
@@ -193,6 +223,33 @@ async function collectFolderFileUris(
   return getAllFileUris(folderUri, scopes, new Set<string>())
 }
 
+function findOpenDocument(fileUri: vscode.Uri): vscode.TextDocument | undefined {
+  const targetUriStr = fileUri.toString()
+  const targetKey = normalizePathKey(fileUri.fsPath)
+  return vscode.workspace.textDocuments.find(
+    (d) =>
+      d.uri.toString() === targetUriStr ||
+      (d.uri.scheme === fileUri.scheme && normalizePathKey(d.uri.fsPath) === targetKey)
+  )
+}
+
+async function isFileHeaderBinary(fileUri: vscode.Uri, sampleSize = 8192): Promise<boolean> {
+  if (fileUri.scheme !== 'file') {
+    return false
+  }
+  let handle: fs.FileHandle | undefined
+  try {
+    handle = await fs.open(fileUri.fsPath, 'r')
+    const buffer = Buffer.alloc(sampleSize)
+    const { bytesRead } = await handle.read(buffer, 0, sampleSize, 0)
+    return isBinaryBuffer(buffer.subarray(0, bytesRead), sampleSize)
+  } catch {
+    return false
+  } finally {
+    await handle?.close().catch(() => {})
+  }
+}
+
 async function getFormattedFileString(
   fileUri: vscode.Uri,
   remainingBudget: number
@@ -207,10 +264,7 @@ async function getFormattedFileString(
   let fileContent: string
   let language: string
 
-  const targetKey = normalizePathKey(fileUri.fsPath)
-  const openDoc = vscode.workspace.textDocuments.find(
-    (d) => d.uri.toString() === fileUri.toString() || normalizePathKey(d.uri.fsPath) === targetKey
-  )
+  const openDoc = findOpenDocument(fileUri)
   if (openDoc) {
     fileContent = openDoc.getText()
     if (fileContent.length > remainingBudget) {
@@ -222,10 +276,19 @@ async function getFormattedFileString(
   } else {
     try {
       const stat = await vscode.workspace.fs.stat(fileUri)
+      // 大文件在检查大小上限与全量读盘前，先仅读前 8KB 探测二进制，避免超大未知二进制文件误中断后续复制
+      if (stat.size > 8192 && (await isFileHeaderBinary(fileUri))) {
+        const block = `File: ${relativePath}\n`
+        return block.length > remainingBudget ? { status: 'too_large' } : { status: 'ok', block }
+      }
       if (stat.size > remainingBudget) {
         return { status: 'too_large' }
       }
       const fileContentBytes = await vscode.workspace.fs.readFile(fileUri)
+      if (isBinaryBuffer(fileContentBytes)) {
+        const block = `File: ${relativePath}\n`
+        return block.length > remainingBudget ? { status: 'too_large' } : { status: 'ok', block }
+      }
       fileContent = Buffer.from(fileContentBytes).toString('utf8')
     } catch {
       return { status: 'missing' }
@@ -267,7 +330,7 @@ async function processUris(uris: vscode.Uri[], maxLength: number): Promise<Proce
     currentLength += result.block.length
   }
 
-  const finalContent = allFormattedContents.join('\n\n---\n\n')
+  const finalContent = sanitizeForClipboard(allFormattedContents.join('\n\n---\n\n'))
   return {
     content: finalContent,
     processedCount: allFormattedContents.length,
@@ -308,7 +371,7 @@ export function activate(context: vscode.ExtensionContext) {
     const lineRange = formatLineRange(selection.start.line, selection.end.line, selection.end.character)
     const relPath = getRelativePath(doc.uri)
     const lang = getLanguage(doc.uri.fsPath, doc.languageId)
-    const formatted = formatFileBlock(relPath, lang, snippetText, lineRange)
+    const formatted = sanitizeForClipboard(formatFileBlock(relPath, lang, snippetText, lineRange))
 
     if (formatted.length > maxLength) {
       vscode.window.showWarningMessage(vscode.l10n.t('Selected content exceeds the {0}MB size limit.', sizeMB))
@@ -404,23 +467,43 @@ export function activate(context: vscode.ExtensionContext) {
     }
   )
 
-  // 2. 复制文件夹
+  // 2. 复制文件夹（支持资源管理器空白处右键或命令面板自动回退到工作区根目录）
   const copyFolderCodeCommand = vscode.commands.registerCommand(
     'copy-code-with-path.copyFolderCode',
     async (folderUri?: vscode.Uri) => {
-      if (!folderUri) {
-        vscode.window.showErrorMessage(vscode.l10n.t('Cannot get folder path. Please use from the file explorer.'))
-        return
+      let targetFolderUri = folderUri
+      if (!targetFolderUri) {
+        const folders = vscode.workspace.workspaceFolders
+        if (!folders || folders.length === 0) {
+          vscode.window.showErrorMessage(vscode.l10n.t('Cannot get folder path. Please use from the file explorer.'))
+          return
+        }
+        if (folders.length === 1) {
+          targetFolderUri = folders[0].uri
+        } else {
+          const picked = await vscode.window.showQuickPick(
+            folders.map((f) => ({
+              label: f.name,
+              description: f.uri.fsPath,
+              uri: f.uri
+            })),
+            { placeHolder: vscode.l10n.t('Select a workspace root folder to copy') }
+          )
+          if (!picked) {
+            return
+          }
+          targetFolderUri = picked.uri
+        }
       }
 
       try {
-        const workspaceFolder = vscode.workspace.getWorkspaceFolder(folderUri)
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(targetFolderUri)
         if (!workspaceFolder) {
           vscode.window.showErrorMessage(vscode.l10n.t('Cannot determine the workspace folder.'))
           return
         }
 
-        const allFileUris = await collectFolderFileUris(folderUri, workspaceFolder)
+        const allFileUris = await collectFolderFileUris(targetFolderUri, workspaceFolder)
 
         if (allFileUris.length === 0) {
           vscode.window.showWarningMessage(vscode.l10n.t('The selected folder is empty or contains no copyable files.'))
@@ -442,7 +525,7 @@ export function activate(context: vscode.ExtensionContext) {
         await vscode.env.clipboard.writeText(finalContent)
         const contentStats = formatStats(finalContent)
 
-        const folderName = path.basename(folderUri.fsPath)
+        const folderName = path.basename(targetFolderUri.fsPath)
         if (stoppedEarly) {
           vscode.window.showWarningMessage(
             vscode.l10n.t(
@@ -552,10 +635,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         for (const uri of fileUris) {
           const relPath = getRelativePath(uri)
-          const targetKey = normalizePathKey(uri.fsPath)
-          const openDoc = vscode.workspace.textDocuments.find(
-            (d) => d.uri.toString() === uri.toString() || normalizePathKey(d.uri.fsPath) === targetKey
-          )
+          const openDoc = findOpenDocument(uri)
           const lang = getLanguage(uri.fsPath, openDoc?.languageId)
 
           stackManager.addItem({

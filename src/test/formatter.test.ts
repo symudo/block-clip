@@ -9,19 +9,30 @@ import {
   formatStats,
   getCodeFence,
   getLanguage,
+  isBinaryBuffer,
   isBinaryFile,
   isSensitiveFile,
   normalizePathKey,
-  resolveMaxContentLength
+  resolveMaxContentLength,
+  sanitizeForClipboard
 } from '../formatter'
 
 describe('Formatter & Helpers', () => {
-  it('identifies binary files correctly', () => {
+  it('identifies binary files by extension and by NUL bytes in content', () => {
     assert.strictEqual(isBinaryFile('image.png'), true)
-    assert.strictEqual(isBinaryFile('song.mp3'), true)
-    assert.strictEqual(isBinaryFile('archive.zip'), true)
+    assert.strictEqual(isBinaryFile('data.sqlite'), true)
+    assert.strictEqual(isBinaryFile('cache.db'), true)
     assert.strictEqual(isBinaryFile('script.ts'), false)
     assert.strictEqual(isBinaryFile('README.md'), false)
+
+    // 模拟 SQLite 或无后缀插件数据文件（前 8KB 含 0x00 空字节）
+    assert.strictEqual(isBinaryBuffer(Buffer.from('SQLite format 3\u0000more')), true)
+    assert.strictEqual(isBinaryBuffer(new Uint8Array([0x41, 0x42, 0x00, 0x43])), true)
+    assert.strictEqual(isBinaryBuffer(Buffer.from('export const msg = "你好世界";\n', 'utf8')), false)
+
+    // 剪贴板写入兜底清洗 NUL
+    assert.strictEqual(sanitizeForClipboard('abc\u0000def\u0000ghi'), 'abcdefghi')
+    assert.strictEqual(sanitizeForClipboard('clean text'), 'clean text')
   })
 
   it('identifies sensitive files while allowing safe env templates', () => {

@@ -11,6 +11,7 @@
   "Code copied: {0} [{1}]": "Code copied: {0} [{1}]",
   "Failed to copy file content: {0}": "Failed to copy file content: {0}",
   "Cannot get folder path. Please use from the file explorer.": "Cannot get folder path. Please use from the file explorer.",
+  "Select a workspace root folder to copy": "Select a workspace root folder to copy",
   "Cannot determine the workspace folder.": "Cannot determine the workspace folder.",
   "The selected folder is empty or contains no copyable files.": "The selected folder is empty or contains no copyable files.",
   "Copied {1} item(s) from folder '{0}' [{2}]. Some files were skipped due to size limits.": "Copied {1} item(s) from folder '{0}' [{2}]. Some files were skipped due to size limits.",

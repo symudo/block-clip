@@ -2,7 +2,7 @@
   "name": "block-clip",
   "displayName": "blockClip",
   "description": "%extension.description%",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "publisher": "yuchuan",
   "l10n": "./l10n",
   "license": "MIT",
@@ -123,6 +123,11 @@
         },
         {
           "when": "resourceScheme == 'file' && explorerResourceIsFolder",
+          "command": "copy-code-with-path.copyFolderCode",
+          "group": "navigation@5"
+        },
+        {
+          "when": "!explorerResourceIsFolder && !resourceScheme && workspaceFolderCount > 0",
           "command": "copy-code-with-path.copyFolderCode",
           "group": "navigation@5"
         },

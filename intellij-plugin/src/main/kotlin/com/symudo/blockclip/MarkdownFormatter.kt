@@ -36,6 +36,9 @@ object MarkdownFormatter {
         "exe", "dll", "so", "dylib", "app", "dmg",
         "class", "jar", "war", "ear",
         "woff", "woff2", "ttf", "otf", "eot",
+        "db", "sqlite", "sqlite3", "bin", "dat", "ldb", "sst", "wal", "shm",
+        "idx", "pack", "wasm", "node", "pyc", "pyo", "o", "a", "lib", "pdb",
+        "hprof", "parquet", "avro", "pb",
         "lockb", "ds_store"
     )
 
@@ -109,8 +112,44 @@ object MarkdownFormatter {
     }
 
     fun isBinaryFile(file: VirtualFile): Boolean {
-        val extension = file.extension?.lowercase(Locale.ROOT) ?: return false
-        return binaryExtensions.contains(extension)
+        val extension = file.extension?.lowercase(Locale.ROOT)
+        if (extension != null && binaryExtensions.contains(extension)) {
+            return true
+        }
+        // 在真实 IDE 环境下于 ReadAction 中借助 IntelliJ 自身文件类型系统判定二进制文件
+        if (ApplicationManager.getApplication() != null) {
+            try {
+                val isBinary = ReadAction.compute<Boolean, Throwable> {
+                    file.isValid && file.fileType.isBinary
+                }
+                if (isBinary) {
+                    return true
+                }
+            } catch (_: Exception) {
+            }
+        }
+        return false
+    }
+
+    /**
+     * 与 Git 相同的内容级二进制探测：扫描前 sampleSize（默认 8KB）字节中是否包含 NUL (0x00) 空字节。
+     * 彻底识别未知扩展名或无后缀的数据库/缓存/索引二进制文件，杜绝 Windows 剪贴板 NUL 截断。
+     */
+    fun isBinaryBytes(bytes: ByteArray, sampleSize: Int = 8192): Boolean {
+        val limit = minOf(bytes.size, sampleSize)
+        for (i in 0 until limit) {
+            if (bytes[i] == 0.toByte()) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * 写入系统剪贴板前的兜底清洗：移除任何 NUL (\0) 字符，防止 Windows CF_UNICODETEXT 截断后续代码。
+     */
+    fun sanitizeForClipboard(text: String): String {
+        return if (text.indexOf('\u0000') >= 0) text.replace("\u0000", "") else text
     }
 
     /**
@@ -238,6 +277,7 @@ object MarkdownFormatter {
 
     sealed class FileReadResult {
         data class Ok(val content: String) : FileReadResult()
+        object Binary : FileReadResult()
         object Missing : FileReadResult()
         object TooLarge : FileReadResult()
     }
@@ -262,13 +302,22 @@ object MarkdownFormatter {
             }
         }
 
+        // 大文件在检查大小上限与全量读盘前，先仅流式读取前 8KB 探测二进制，避免超大未知二进制文件误中断后续复制
+        if (file.length > 8192L && isFileHeaderBinary(file)) {
+            return FileReadResult.Binary
+        }
+
         // 读取磁盘前先预检物理大小，避免将超大文件整份读入内存
         if (file.length > remainingBudget) {
             return FileReadResult.TooLarge
         }
 
         return try {
-            val text = String(file.contentsToByteArray(), Charsets.UTF_8)
+            val bytes = file.contentsToByteArray()
+            if (isBinaryBytes(bytes)) {
+                return FileReadResult.Binary
+            }
+            val text = String(bytes, Charsets.UTF_8)
             if (text.length.toLong() > remainingBudget) {
                 FileReadResult.TooLarge
             } else {
@@ -279,16 +328,39 @@ object MarkdownFormatter {
         }
     }
 
+    private fun isFileHeaderBinary(file: VirtualFile, sampleSize: Int = 8192): Boolean {
+        return try {
+            file.inputStream.use { stream ->
+                val buffer = ByteArray(sampleSize)
+                var totalRead = 0
+                while (totalRead < sampleSize) {
+                    val read = stream.read(buffer, totalRead, sampleSize - totalRead)
+                    if (read <= 0) break
+                    totalRead += read
+                }
+                for (i in 0 until totalRead) {
+                    if (buffer[i] == 0.toByte()) {
+                        return true
+                    }
+                }
+                false
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun formatSelection(
         file: VirtualFile,
         project: Project?,
         selectedText: String,
         lineRange: String
     ): String {
+        val cleanText = sanitizeForClipboard(selectedText)
         val relativePath = getRelativePath(file, project)
         val language = getLanguage(file)
-        val fence = getCodeFence(selectedText)
-        return "File: $relativePath ($lineRange)\n\n$fence$language\n$selectedText\n$fence\n"
+        val fence = getCodeFence(cleanText)
+        return "File: $relativePath ($lineRange)\n\n$fence$language\n$cleanText\n$fence\n"
     }
 
     data class ProcessResult(
@@ -325,6 +397,9 @@ object MarkdownFormatter {
                         stoppedEarly = true
                         break
                     }
+                    is FileReadResult.Binary -> {
+                        "File: $relativePath\n"
+                    }
                     is FileReadResult.Ok -> {
                         val language = getLanguage(file)
                         val fence = getCodeFence(read.content)
@@ -344,7 +419,7 @@ object MarkdownFormatter {
             currentLength += block.length.toLong()
         }
 
-        val finalContent = formattedContents.joinToString("\n\n---\n\n")
+        val finalContent = sanitizeForClipboard(formattedContents.joinToString("\n\n---\n\n"))
         return ProcessResult(finalContent, formattedContents.size, stoppedEarly, skippedMissing, firstProcessedFileName)
     }
 
@@ -358,19 +433,21 @@ object MarkdownFormatter {
             item.snippetContent ?: ""
         } else {
             when (val read = readFileContentSafely(item.file, BlockClipSettings.getCurrentMaxLength())) {
+                is FileReadResult.Binary -> return "File: $relativePath\n"
                 is FileReadResult.Ok -> read.content
                 else -> ""
             }
         }
 
+        val cleanContent = sanitizeForClipboard(fileContent)
         val language = item.language
-        val fence = getCodeFence(fileContent)
+        val fence = getCodeFence(cleanContent)
         val header = if (item.lineRange != null) {
             "File: $relativePath (${item.lineRange})"
         } else {
             "File: $relativePath"
         }
-        return "$header\n\n$fence$language\n$fileContent\n$fence\n"
+        return "$header\n\n$fence$language\n$cleanContent\n$fence\n"
     }
 
     fun processClipItems(
@@ -404,6 +481,9 @@ object MarkdownFormatter {
                         stoppedEarly = true
                         break
                     }
+                    is FileReadResult.Binary -> {
+                        "File: $relativePath\n"
+                    }
                     is FileReadResult.Ok -> {
                         val fence = getCodeFence(read.content)
                         "File: $relativePath\n\n$fence${item.language}\n${read.content}\n$fence\n"
@@ -422,7 +502,7 @@ object MarkdownFormatter {
             currentLength += block.length.toLong()
         }
 
-        val finalContent = formattedContents.joinToString("\n\n---\n\n")
+        val finalContent = sanitizeForClipboard(formattedContents.joinToString("\n\n---\n\n"))
         return ProcessResult(finalContent, formattedContents.size, stoppedEarly, skippedMissing, firstProcessedFileName)
     }
 }

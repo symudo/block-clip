@@ -3,6 +3,26 @@
 所有对本项目的显著更改都将记录在此文件中。
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/) 规范。
 
+## [0.5.1] - 2026-11-24
+
+### ✨ 新增特性 (Features)
+- **【VS Code】原生支持复制工作区根文件夹代码**：
+  - 在资源管理器左侧下方空白处右键，可直接点击 **“复制文件夹代码”** 复制整个项目根目录。
+  - 从命令面板无参执行 **“复制文件夹代码”** 时自动回退到当前工作区根目录（多根工作区自动弹出选择列表）。
+
+### 🐛 根因修复与稳定性增强 (Bug Fixes)
+- **【双端】彻底根治 Windows 剪贴板遇 NUL (`\0`) 空字节被半路截断的问题**：
+  - 采用与 Git 一致的内容级二进制探测机制：扩充常见数据库/缓存后缀黑名单（`.db`、`.sqlite`、`.ldb`、`.wal`、`.dat`、`.bin`、`.idx` 等），并对文件内容前 8KB 扫描 `0x00` 字节；JetBrains 端同步结合 `file.fileType.isBinary`（`ReadAction` 安全读取）。
+  - 对于超过 8KB 的大文件，在判断大小上限与全量读盘之前先执行前 8KB 流式头探测，既零浪费内存，也杜绝超大未知后缀二进制文件误触发大小上限而中断后续源码复制。
+  - 写入系统剪贴板前统一执行 `sanitizeForClipboard` 兜底清洗，彻底杜绝 Windows `CF_UNICODETEXT` 剪贴板在 `\0` 处截断后续全部代码。
+- **【双端】尊重 IDE 目录树隐藏/排除目录及 `.git/info/exclude`**：
+  - **JetBrains**：递归扫描文件夹时自动跳过 `FileTypeManager.isFileIgnored` 与 `ProjectFileIndex.isExcluded / isUnderIgnored` 隐藏或排除的目录（例如插件生成的本地数据与日志目录），并自动加载 `.git/info/exclude`；若用户主动右键某个 Excluded 目录本身，仍正常允许复制其内部文件。
+  - **VS Code**：自动加载工作区 `files.exclude`（逐条容错隔离）及 `.git/info/exclude` 规则。
+- **【VS Code】修复打开 Git Diff 对比视图时可能误读 `git:` 虚拟文档旧版内容的问题**：
+  - 匹配内存中已打开文档时严格校验 `uri.scheme`，杜绝虚拟 Diff 文档污染真实文件读取。
+
+---
+
 ## [0.5.0] - 2026-11-23
 
 ### ✨ 新增特性 (Features)

@@ -110,7 +110,7 @@ class AddToStackAction : AnAction(), DumbAware {
                         for (entry in targets) {
                             indicator.checkCanceled()
                             if (entry.isDirectory) {
-                                collected.addAll(GitIgnoreFilter.collectAllFiles(entry, projectBaseDir, indicator))
+                                collected.addAll(GitIgnoreFilter.collectAllFiles(entry, projectBaseDir, indicator, project))
                             } else {
                                 collected.add(entry)
                             }

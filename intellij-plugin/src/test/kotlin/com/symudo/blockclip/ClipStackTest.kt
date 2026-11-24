@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.io.ByteArrayInputStream
 import java.io.InputStream
 import java.io.OutputStream
 
@@ -15,7 +16,8 @@ class ClipStackTest {
         private val rawContent: String = "",
         private val valid: Boolean = true,
         private val fakeLength: Long? = null,
-        private val failOnRead: Boolean = false
+        private val failOnRead: Boolean = false,
+        private val headerBytes: ByteArray? = null
     ) : VirtualFile() {
         override fun getName(): String = fileName
         override fun getFileSystem() = throw UnsupportedOperationException()
@@ -36,7 +38,8 @@ class ClipStackTest {
         override fun getTimeStamp(): Long = 0
         override fun getLength(): Long = fakeLength ?: rawContent.length.toLong()
         override fun refresh(asynchronous: Boolean, recursive: Boolean, postRunnable: Runnable?) {}
-        override fun getInputStream(): InputStream = throw UnsupportedOperationException()
+        override fun getInputStream(): InputStream =
+            headerBytes?.let { ByteArrayInputStream(it) } ?: throw UnsupportedOperationException()
         override fun getExtension(): String = fileName.substringAfterLast('.', "")
     }
 
@@ -148,5 +151,31 @@ class ClipStackTest {
         val truncated = MarkdownFormatter.processClipItems(listOf(item1, item2), null, maxLength = 70)
         assertEquals(1, truncated.processedCount)
         assertTrue(truncated.stoppedEarly)
+    }
+
+    @Test
+    fun testUnknownExtensionBinaryFileDoesNotTruncateSubsequentFiles() {
+        val pluginDataFile = DummyVirtualFile("cache_data", rawContent = "SQLite format 3\u0000\u0001\u0002binary")
+        val normalCodeFile = DummyVirtualFile("Main.kt", rawContent = "fun main() = println(\"OK\")")
+
+        val res = MarkdownFormatter.processFiles(listOf(pluginDataFile, normalCodeFile), null)
+        assertEquals(2, res.processedCount)
+        assertFalse(res.stoppedEarly)
+        assertTrue(res.content.contains("File: cache_data\n"))
+        assertTrue(res.content.contains("fun main() = println(\"OK\")"))
+        assertFalse(res.content.contains("\u0000"))
+
+        // 验证超大未知后缀二进制文件通过前 8KB 流式头探测跳过，不触发全量读盘，也不误中断后续正常源码
+        val hugeBinary = DummyVirtualFile(
+            fileName = "huge_unknown_cache",
+            fakeLength = 80L * 1024 * 1024,
+            failOnRead = true,
+            headerBytes = byteArrayOf(0x53, 0x51, 0x4C, 0x00, 0x01, 0x02)
+        )
+        val resWithHuge = MarkdownFormatter.processFiles(listOf(hugeBinary, normalCodeFile), null, maxLength = 1024)
+        assertEquals(2, resWithHuge.processedCount)
+        assertFalse(resWithHuge.stoppedEarly)
+        assertTrue(resWithHuge.content.contains("File: huge_unknown_cache\n"))
+        assertTrue(resWithHuge.content.contains("fun main() = println(\"OK\")"))
     }
 }
