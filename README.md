@@ -31,6 +31,7 @@
 - **文件夹递归与 .gitignore / IDE 忽略规则级联**：
   - 智能级联读取项目根目录、中间目录及子目录的 `.gitignore` 与 `.git/info/exclude` 规则，并自动尊重 IDE 隐藏/排除目录（JetBrains Excluded/Ignored 目录、VS Code `files.exclude`）。
   - 默认忽略 `.git`、`node_modules`、`dist`、`build`、`.idea`、`.vscode` 等目录。
+  - **文件夹递归与实时进度条**：双端批量复制/扫描文件夹时均提供原生进度条，实时展示扫描计数、读取百分比与当前文件名，并支持随时取消。
   - **自定义大小上限保护**：默认上限 **50 MB**，支持在设置中自由调整（设为 `0` 表示无限制）：
     - **VS Code**：设置搜索 `blockClip.maxContentSizeMB`
     - **JetBrains (IDEA / WebStorm)**：`Settings -> Tools -> BlockClip`

@@ -41,5 +41,10 @@
   "Clip Stack Manager ({0} items)": "代码暂存栈管理器 ({0} 项)",
   "Select an item to view, or click the trash button to delete it": "选择条目可直接跳转查看，点击垃圾桶图标可单条移除",
   "Removed selected item from clip stack.": "已从暂存栈中删除所选条目。",
-  "File no longer exists: {0}": "文件已不存在: {0}"
+  "File no longer exists: {0}": "文件已不存在: {0}",
+  "Copying files from folder '{0}'...": "正在扫描并复制文件夹 '{0}'...",
+  "Copying selected files...": "正在复制所选文件...",
+  "Scanning folder files for Clip Stack...": "正在扫描文件夹并加入暂存栈...",
+  "Formatting and copying Clip Stack...": "正在格式化并复制暂存栈代码...",
+  "Scanning files ({0} found)...": "正在扫描文件（已发现 {0} 个）..."
 }

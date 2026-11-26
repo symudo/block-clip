@@ -28,7 +28,10 @@ interface ProcessUrisResult {
   stoppedEarly: boolean
   skippedMissingCount: number
   firstProcessedPath?: string
+  cancelled?: boolean
 }
+
+type ProgressReporter = vscode.Progress<{ message?: string; increment?: number }>
 
 const DEFAULT_IGNORES = [
   '.git',
@@ -135,8 +138,15 @@ function isIgnoredByScopes(entryFsPath: string, isDirectory: boolean, scopes: Sc
 async function getAllFileUris(
   directoryUri: vscode.Uri,
   scopes: ScopedIgnore[],
-  visitedRealDirs: Set<string>
+  visitedRealDirs: Set<string>,
+  onFileFound?: (totalFound: number) => void,
+  token?: vscode.CancellationToken,
+  counter: { count: number } = { count: 0 }
 ): Promise<vscode.Uri[]> {
+  if (token?.isCancellationRequested) {
+    return []
+  }
+
   try {
     const realDir = normalizePathKey(await fs.realpath(directoryUri.fsPath))
     if (visitedRealDirs.has(realDir)) {
@@ -169,6 +179,10 @@ async function getAllFileUris(
   }
 
   for (const [name, type] of entries) {
+    if (token?.isCancellationRequested) {
+      return []
+    }
+
     const entryUri = vscode.Uri.joinPath(directoryUri, name)
     const isDir = (type & vscode.FileType.Directory) !== 0
     const isFile = (type & vscode.FileType.File) !== 0
@@ -178,12 +192,14 @@ async function getAllFileUris(
     }
 
     if (isDir) {
-      allFiles.push(...(await getAllFileUris(entryUri, activeScopes, visitedRealDirs)))
+      allFiles.push(...(await getAllFileUris(entryUri, activeScopes, visitedRealDirs, onFileFound, token, counter)))
     } else if (isFile) {
       if (isSensitiveFile(entryUri.fsPath)) {
         continue
       }
       allFiles.push(entryUri)
+      counter.count++
+      onFileFound?.(counter.count)
     }
   }
 
@@ -192,8 +208,15 @@ async function getAllFileUris(
 
 async function collectFolderFileUris(
   folderUri: vscode.Uri,
-  workspaceFolder: vscode.WorkspaceFolder | undefined
+  workspaceFolder: vscode.WorkspaceFolder | undefined,
+  onFileFound?: (totalFound: number) => void,
+  token?: vscode.CancellationToken,
+  counter: { count: number } = { count: 0 }
 ): Promise<vscode.Uri[]> {
+  if (token?.isCancellationRequested) {
+    return []
+  }
+
   const scopes: ScopedIgnore[] = []
 
   if (workspaceFolder) {
@@ -207,6 +230,9 @@ async function collectFolderFileUris(
       const parts = relToRoot.split(path.sep).filter(Boolean)
       let currentUri = workspaceFolder.uri
       for (const part of parts) {
+        if (token?.isCancellationRequested) {
+          return []
+        }
         currentUri = vscode.Uri.joinPath(currentUri, part)
         const midScope = await readGitIgnoreScope(currentUri, false)
         if (midScope) {
@@ -221,7 +247,7 @@ async function collectFolderFileUris(
     }
   }
 
-  return getAllFileUris(folderUri, scopes, new Set<string>())
+  return getAllFileUris(folderUri, scopes, new Set<string>(), onFileFound, token, counter)
 }
 
 function findOpenDocument(fileUri: vscode.Uri): vscode.TextDocument | undefined {
@@ -304,16 +330,79 @@ async function getFormattedFileString(
   return { status: 'ok', block }
 }
 
-async function processUris(uris: vscode.Uri[], maxLength: number): Promise<ProcessUrisResult> {
+function createScanProgressCallback(progress: ProgressReporter): (totalFound: number) => void {
+  let lastReportTime = 0
+  return (totalFound: number) => {
+    const now = Date.now()
+    if (totalFound === 1 || now - lastReportTime >= 60) {
+      lastReportTime = now
+      progress.report({ message: vscode.l10n.t('Scanning files ({0} found)...', totalFound) })
+    }
+  }
+}
+
+function createItemProgressCallback(
+  progress: ProgressReporter
+): (current: number, total: number, label: string) => void {
+  let reportedPercent = 0
+  let lastReportTime = 0
+  return (current: number, total: number, label: string) => {
+    if (total <= 0) return
+    const nextPercent = Math.min(100, (current / total) * 100)
+    const now = Date.now()
+    if (current === 1 || current === total || nextPercent - reportedPercent >= 1 || now - lastReportTime >= 60) {
+      const increment = Math.max(0, nextPercent - reportedPercent)
+      reportedPercent = nextPercent
+      lastReportTime = now
+      progress.report({
+        increment,
+        message: `(${current}/${total}) ${label}`
+      })
+    }
+  }
+}
+
+async function processUris(
+  uris: vscode.Uri[],
+  maxLength: number,
+  progress?: ProgressReporter,
+  token?: vscode.CancellationToken
+): Promise<ProcessUrisResult> {
   const allFormattedContents: string[] = []
   let currentLength = 0
   let stoppedEarly = false
   let skippedMissingCount = 0
   let firstProcessedPath: string | undefined
+  const total = uris.length
+  const reportItem = progress ? createItemProgressCallback(progress) : undefined
 
-  for (const uri of uris) {
+  for (let i = 0; i < total; i++) {
+    if (token?.isCancellationRequested) {
+      return {
+        content: '',
+        processedCount: 0,
+        stoppedEarly: false,
+        skippedMissingCount,
+        cancelled: true
+      }
+    }
+
+    const uri = uris[i]
+    const displayName = uri.scheme === 'untitled' ? getRelativePath(uri) : path.basename(uri.fsPath)
+    reportItem?.(i + 1, total, displayName)
+
     const remaining = maxLength - currentLength
     const result = await getFormattedFileString(uri, remaining)
+
+    if (token?.isCancellationRequested) {
+      return {
+        content: '',
+        processedCount: 0,
+        stoppedEarly: false,
+        skippedMissingCount,
+        cancelled: true
+      }
+    }
 
     if (result.status === 'missing') {
       skippedMissingCount++
@@ -337,7 +426,8 @@ async function processUris(uris: vscode.Uri[], maxLength: number): Promise<Proce
     processedCount: allFormattedContents.length,
     stoppedEarly,
     skippedMissingCount,
-    firstProcessedPath
+    firstProcessedPath,
+    cancelled: false
   }
 }
 
@@ -429,8 +519,22 @@ export function activate(context: vscode.ExtensionContext) {
           content: finalContent,
           processedCount,
           stoppedEarly,
-          firstProcessedPath
-        } = await processUris(fileUris, maxLength)
+          firstProcessedPath,
+          cancelled
+        } = fileUris.length > 1
+          ? await vscode.window.withProgress(
+              {
+                location: vscode.ProgressLocation.Notification,
+                title: vscode.l10n.t('Copying selected files...'),
+                cancellable: true
+              },
+              (progress, token) => processUris(fileUris, maxLength, progress, token)
+            )
+          : await processUris(fileUris, maxLength)
+
+        if (cancelled) {
+          return
+        }
 
         if (processedCount === 0) {
           vscode.window.showWarningMessage(
@@ -504,15 +608,38 @@ export function activate(context: vscode.ExtensionContext) {
           return
         }
 
-        const allFileUris = await collectFolderFileUris(targetFolderUri, workspaceFolder)
+        const folderName = path.basename(targetFolderUri.fsPath)
+        const { sizeMB, maxLength } = getMaxContentConfig()
 
-        if (allFileUris.length === 0) {
+        const runResult = await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: vscode.l10n.t("Copying files from folder '{0}'...", folderName),
+            cancellable: true
+          },
+          async (progress, token) => {
+            const onScanFile = createScanProgressCallback(progress)
+            const allFileUris = await collectFolderFileUris(targetFolderUri, workspaceFolder, onScanFile, token)
+            if (token.isCancellationRequested) {
+              return { cancelled: true as const, empty: false, result: undefined }
+            }
+            if (allFileUris.length === 0) {
+              return { cancelled: false as const, empty: true, result: undefined }
+            }
+            const res = await processUris(allFileUris, maxLength, progress, token)
+            return { cancelled: Boolean(res.cancelled), empty: false, result: res }
+          }
+        )
+
+        if (runResult.cancelled) {
+          return
+        }
+        if (runResult.empty || !runResult.result) {
           vscode.window.showWarningMessage(vscode.l10n.t('The selected folder is empty or contains no copyable files.'))
           return
         }
 
-        const { sizeMB, maxLength } = getMaxContentConfig()
-        const { content: finalContent, processedCount, stoppedEarly } = await processUris(allFileUris, maxLength)
+        const { content: finalContent, processedCount, stoppedEarly } = runResult.result
 
         if (processedCount === 0) {
           vscode.window.showWarningMessage(
@@ -526,7 +653,6 @@ export function activate(context: vscode.ExtensionContext) {
         await vscode.env.clipboard.writeText(finalContent)
         const contentStats = formatStats(finalContent)
 
-        const folderName = path.basename(targetFolderUri.fsPath)
         if (stoppedEarly) {
           vscode.window.showWarningMessage(
             vscode.l10n.t(
@@ -613,20 +739,59 @@ export function activate(context: vscode.ExtensionContext) {
               : vscode.workspace.fs.stat(uri)
           )
         )
-        for (let i = 0; i < statResults.length; i++) {
-          const res = statResults[i]
-          if (res.status !== 'fulfilled') {
-            continue
+        const hasDirectory = statResults.some(
+          (res) => res.status === 'fulfilled' && (res.value.type & vscode.FileType.Directory) !== 0
+        )
+
+        const collectTargets = async (
+          progress?: ProgressReporter,
+          token?: vscode.CancellationToken
+        ): Promise<boolean> => {
+          const onScanFile = progress ? createScanProgressCallback(progress) : undefined
+          const sharedCounter = { count: 0 }
+          for (let i = 0; i < statResults.length; i++) {
+            if (token?.isCancellationRequested) {
+              return true
+            }
+            const res = statResults[i]
+            if (res.status !== 'fulfilled') {
+              continue
+            }
+            const stat = res.value
+            const targetUri = targetUris[i]
+            if ((stat.type & vscode.FileType.File) !== 0) {
+              fileUris.push(targetUri)
+            } else if ((stat.type & vscode.FileType.Directory) !== 0) {
+              const workspaceFolder = vscode.workspace.getWorkspaceFolder(targetUri)
+              const folderFiles = await collectFolderFileUris(
+                targetUri,
+                workspaceFolder,
+                onScanFile,
+                token,
+                sharedCounter
+              )
+              if (token?.isCancellationRequested) {
+                return true
+              }
+              fileUris.push(...folderFiles)
+            }
           }
-          const stat = res.value
-          const targetUri = targetUris[i]
-          if ((stat.type & vscode.FileType.File) !== 0) {
-            fileUris.push(targetUri)
-          } else if ((stat.type & vscode.FileType.Directory) !== 0) {
-            const workspaceFolder = vscode.workspace.getWorkspaceFolder(targetUri)
-            const folderFiles = await collectFolderFileUris(targetUri, workspaceFolder)
-            fileUris.push(...folderFiles)
-          }
+          return Boolean(token?.isCancellationRequested)
+        }
+
+        const cancelled = hasDirectory
+          ? await vscode.window.withProgress(
+              {
+                location: vscode.ProgressLocation.Notification,
+                title: vscode.l10n.t('Scanning folder files for Clip Stack...'),
+                cancellable: true
+              },
+              (progress, token) => collectTargets(progress, token)
+            )
+          : await collectTargets()
+
+        if (cancelled) {
+          return
         }
 
         if (fileUris.length === 0) {
@@ -726,7 +891,31 @@ export function activate(context: vscode.ExtensionContext) {
 
     try {
       const { sizeMB, maxLength } = getMaxContentConfig()
-      const { content: finalContent, processedCount, stoppedEarly } = await stackManager.formatAll(maxLength)
+      const {
+        content: finalContent,
+        processedCount,
+        stoppedEarly,
+        cancelled
+      } = stackManager.count() > 1
+        ? await vscode.window.withProgress(
+            {
+              location: vscode.ProgressLocation.Notification,
+              title: vscode.l10n.t('Formatting and copying Clip Stack...'),
+              cancellable: true
+            },
+            (progress, token) => {
+              const reportItem = createItemProgressCallback(progress)
+              return stackManager.formatAll(maxLength, {
+                isCancelled: () => token.isCancellationRequested,
+                onProgress: (current, total, item) => reportItem(current, total, path.basename(item.relativePath))
+              })
+            }
+          )
+        : await stackManager.formatAll(maxLength)
+
+      if (cancelled) {
+        return
+      }
 
       if (processedCount === 0) {
         vscode.window.showWarningMessage(

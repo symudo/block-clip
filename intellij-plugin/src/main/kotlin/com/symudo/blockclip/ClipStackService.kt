@@ -2,6 +2,7 @@ package com.symudo.blockclip
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
+import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.WindowManager
@@ -97,9 +98,12 @@ class ClipStackService(private val project: Project) {
         return items.size
     }
 
-    fun formatAll(maxLength: Long = BlockClipSettings.getCurrentMaxLength()): MarkdownFormatter.ProcessResult {
+    fun formatAll(
+        maxLength: Long = BlockClipSettings.getCurrentMaxLength(),
+        indicator: ProgressIndicator? = null
+    ): MarkdownFormatter.ProcessResult {
         val currentItems = getItems()
-        return MarkdownFormatter.processClipItems(currentItems, project, maxLength)
+        return MarkdownFormatter.processClipItems(currentItems, project, maxLength, indicator)
     }
 
     companion object {

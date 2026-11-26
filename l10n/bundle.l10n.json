@@ -41,5 +41,10 @@
   "Clip Stack Manager ({0} items)": "Clip Stack Manager ({0} items)",
   "Select an item to view, or click the trash button to delete it": "Select an item to view, or click the trash button to delete it",
   "Removed selected item from clip stack.": "Removed selected item from clip stack.",
-  "File no longer exists: {0}": "File no longer exists: {0}"
+  "File no longer exists: {0}": "File no longer exists: {0}",
+  "Copying files from folder '{0}'...": "Copying files from folder '{0}'...",
+  "Copying selected files...": "Copying selected files...",
+  "Scanning folder files for Clip Stack...": "Scanning folder files for Clip Stack...",
+  "Formatting and copying Clip Stack...": "Formatting and copying Clip Stack...",
+  "Scanning files ({0} found)...": "Scanning files ({0} found)..."
 }

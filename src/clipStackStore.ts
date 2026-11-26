@@ -24,6 +24,12 @@ export interface FormatAllResult {
   stoppedEarly: boolean
   skippedMissingCount: number
   firstProcessedPath?: string
+  cancelled?: boolean
+}
+
+export interface FormatAllOptions<T> {
+  isCancelled?: () => boolean
+  onProgress?: (processed: number, total: number, item: T) => void
 }
 
 export class ClipStackStore<T extends StackEntry = StackEntry> {
@@ -79,15 +85,30 @@ export class ClipStackStore<T extends StackEntry = StackEntry> {
 
   public async formatAll(
     readFileContent: (item: T, remainingBudget: number) => Promise<FileReadResult>,
-    maxLength: number = MAX_CONTENT_LENGTH
+    maxLength: number = MAX_CONTENT_LENGTH,
+    options?: FormatAllOptions<T>
   ): Promise<FormatAllResult> {
     const formattedBlocks: string[] = []
     let currentLength = 0
     let stoppedEarly = false
     let skippedMissingCount = 0
     let firstProcessedPath: string | undefined
+    const total = this.items.length
 
-    for (const item of this.items) {
+    for (let i = 0; i < total; i++) {
+      if (options?.isCancelled?.()) {
+        return {
+          content: '',
+          processedCount: 0,
+          stoppedEarly: false,
+          skippedMissingCount,
+          cancelled: true
+        }
+      }
+
+      const item = this.items[i]
+      options?.onProgress?.(i + 1, total, item)
+
       let block: string
       if (!item.isSnippet && isBinaryFile(item.fsPath)) {
         block = `File: ${item.relativePath}\n`
@@ -96,6 +117,15 @@ export class ClipStackStore<T extends StackEntry = StackEntry> {
       } else {
         const remaining = maxLength - currentLength
         const readResult = await readFileContent(item, remaining)
+        if (options?.isCancelled?.()) {
+          return {
+            content: '',
+            processedCount: 0,
+            stoppedEarly: false,
+            skippedMissingCount,
+            cancelled: true
+          }
+        }
         if (readResult.status === 'missing') {
           skippedMissingCount++
           continue
@@ -128,7 +158,8 @@ export class ClipStackStore<T extends StackEntry = StackEntry> {
       processedCount: formattedBlocks.length,
       stoppedEarly,
       skippedMissingCount,
-      firstProcessedPath
+      firstProcessedPath,
+      cancelled: false
     }
   }
 }

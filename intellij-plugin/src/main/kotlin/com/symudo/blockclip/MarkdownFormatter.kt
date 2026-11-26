@@ -3,6 +3,7 @@ package com.symudo.blockclip
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import java.io.File
@@ -379,15 +380,27 @@ object MarkdownFormatter {
     fun processFiles(
         files: List<VirtualFile>,
         project: Project?,
-        maxLength: Long = BlockClipSettings.getCurrentMaxLength()
+        maxLength: Long = BlockClipSettings.getCurrentMaxLength(),
+        indicator: ProgressIndicator? = null
     ): ProcessResult {
         val formattedContents = mutableListOf<String>()
         var currentLength = 0L
         var stoppedEarly = false
         var skippedMissing = 0
         var firstProcessedFileName: String? = null
+        val total = files.size
 
-        for (file in files) {
+        if (indicator != null && total > 0) {
+            indicator.isIndeterminate = false
+        }
+
+        for ((index, file) in files.withIndex()) {
+            indicator?.checkCanceled()
+            if (indicator != null && total > 0) {
+                indicator.fraction = (index + 1).toDouble() / total.toDouble()
+                indicator.text2 = "(${index + 1}/$total) ${file.name}"
+            }
+
             val remaining = if (maxLength == Long.MAX_VALUE) Long.MAX_VALUE else maxLength - currentLength
             val relativePath = getRelativePath(file, project)
             val block = if (isBinaryFile(file)) {
@@ -458,15 +471,27 @@ object MarkdownFormatter {
     fun processClipItems(
         items: List<ClipItem>,
         project: Project?,
-        maxLength: Long = BlockClipSettings.getCurrentMaxLength()
+        maxLength: Long = BlockClipSettings.getCurrentMaxLength(),
+        indicator: ProgressIndicator? = null
     ): ProcessResult {
         val formattedContents = mutableListOf<String>()
         var currentLength = 0L
         var stoppedEarly = false
         var skippedMissing = 0
         var firstProcessedFileName: String? = null
+        val total = items.size
 
-        for (item in items) {
+        if (indicator != null && total > 0) {
+            indicator.isIndeterminate = false
+        }
+
+        for ((index, item) in items.withIndex()) {
+            indicator?.checkCanceled()
+            if (indicator != null && total > 0) {
+                indicator.fraction = (index + 1).toDouble() / total.toDouble()
+                indicator.text2 = "(${index + 1}/$total) ${item.file.name}"
+            }
+
             val remaining = if (maxLength == Long.MAX_VALUE) Long.MAX_VALUE else maxLength - currentLength
             val relativePath = item.relativePath.ifEmpty { getRelativePath(item.file, project) }
             val block = if (!item.isSnippet && isBinaryFile(item.file)) {

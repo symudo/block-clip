@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises'
 import * as vscode from 'vscode'
-import { ClipStackStore, type FormatAllResult, type StackEntry } from './clipStackStore'
+import { ClipStackStore, type FormatAllOptions, type FormatAllResult, type StackEntry } from './clipStackStore'
 import { isBinaryBuffer, normalizePathKey } from './formatter'
 
 export interface ClipItem extends StackEntry {
@@ -105,41 +105,45 @@ export class ClipStackManager {
     }
   }
 
-  public async formatAll(maxLength?: number): Promise<FormatAllResult> {
-    return this.store.formatAll(async (item, remainingBudget) => {
-      const targetUriStr = item.uri.toString()
-      const targetKey = normalizePathKey(item.uri.fsPath)
-      const openDoc = vscode.workspace.textDocuments.find(
-        (d) =>
-          d.uri.toString() === targetUriStr ||
-          (d.uri.scheme === item.uri.scheme && normalizePathKey(d.uri.fsPath) === targetKey)
-      )
-      if (openDoc) {
-        const text = openDoc.getText()
-        if (text.length > remainingBudget) {
-          return { status: 'too_large' }
+  public async formatAll(maxLength?: number, options?: FormatAllOptions<ClipItem>): Promise<FormatAllResult> {
+    return this.store.formatAll(
+      async (item, remainingBudget) => {
+        const targetUriStr = item.uri.toString()
+        const targetKey = normalizePathKey(item.uri.fsPath)
+        const openDoc = vscode.workspace.textDocuments.find(
+          (d) =>
+            d.uri.toString() === targetUriStr ||
+            (d.uri.scheme === item.uri.scheme && normalizePathKey(d.uri.fsPath) === targetKey)
+        )
+        if (openDoc) {
+          const text = openDoc.getText()
+          if (text.length > remainingBudget) {
+            return { status: 'too_large' }
+          }
+          return { status: 'ok', content: text }
         }
-        return { status: 'ok', content: text }
-      }
-      if (item.uri.scheme === 'untitled') {
-        return { status: 'missing' }
-      }
-      try {
-        const stat = await vscode.workspace.fs.stat(item.uri)
-        if (stat.size > 8192 && (await this.isFileHeaderBinary(item.uri))) {
-          return { status: 'binary' }
+        if (item.uri.scheme === 'untitled') {
+          return { status: 'missing' }
         }
-        if (stat.size > remainingBudget) {
-          return { status: 'too_large' }
+        try {
+          const stat = await vscode.workspace.fs.stat(item.uri)
+          if (stat.size > 8192 && (await this.isFileHeaderBinary(item.uri))) {
+            return { status: 'binary' }
+          }
+          if (stat.size > remainingBudget) {
+            return { status: 'too_large' }
+          }
+          const bytes = await vscode.workspace.fs.readFile(item.uri)
+          if (isBinaryBuffer(bytes)) {
+            return { status: 'binary' }
+          }
+          return { status: 'ok', content: Buffer.from(bytes).toString('utf8') }
+        } catch {
+          return { status: 'missing' }
         }
-        const bytes = await vscode.workspace.fs.readFile(item.uri)
-        if (isBinaryBuffer(bytes)) {
-          return { status: 'binary' }
-        }
-        return { status: 'ok', content: Buffer.from(bytes).toString('utf8') }
-      } catch {
-        return { status: 'missing' }
-      }
-    }, maxLength)
+      },
+      maxLength,
+      options
+    )
   }
 }

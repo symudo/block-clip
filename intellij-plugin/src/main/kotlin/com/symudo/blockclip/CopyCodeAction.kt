@@ -64,7 +64,7 @@ class CopyCodeAction : AnAction(), DumbAware {
                     indicator.checkCanceled()
                     val maxSizeMB = BlockClipSettings.getCurrentMaxSizeMB()
                     val maxLength = BlockClipSettings.getCurrentMaxLength()
-                    val result = MarkdownFormatter.processFiles(files, project, maxLength)
+                    val result = MarkdownFormatter.processFiles(files, project, maxLength, indicator)
 
                     if (result.processedCount == 0) {
                         val warnMsg = if (result.stoppedEarly) {

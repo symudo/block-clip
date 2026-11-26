@@ -55,7 +55,7 @@ class CopyStackAction : AnAction(), DumbAware {
                         indicator.checkCanceled()
                         val maxSizeMB = BlockClipSettings.getCurrentMaxSizeMB()
                         val maxLength = BlockClipSettings.getCurrentMaxLength()
-                        val result = stackService.formatAll(maxLength)
+                        val result = stackService.formatAll(maxLength, indicator)
 
                         if (result.processedCount == 0) {
                             val warnMsg = if (result.stoppedEarly) {

@@ -277,4 +277,49 @@ describe('ClipStackStore', () => {
     assert.strictEqual(truncated.stoppedEarly, true)
     assert.strictEqual(truncated.processedCount, 1)
   })
+
+  it('reports progress and supports mid-run cancellation in formatAll', async () => {
+    const store = new ClipStackStore()
+    store.addItem({
+      id: '1',
+      fsPath: '/proj/a.ts',
+      relativePath: 'a.ts',
+      language: 'typescript',
+      isSnippet: false,
+      previewText: 'a',
+      addedAt: 1
+    })
+    store.addItem({
+      id: '2',
+      fsPath: '/proj/b.ts',
+      relativePath: 'b.ts',
+      language: 'typescript',
+      isSnippet: false,
+      previewText: 'b',
+      addedAt: 2
+    })
+
+    const progressEvents: Array<[number, number, string]> = []
+    const okRes = await store.formatAll(async () => ({ status: 'ok', content: 'const x = 1;' }), undefined, {
+      onProgress: (processed, total, item) => progressEvents.push([processed, total, item.relativePath])
+    })
+    assert.strictEqual(okRes.cancelled, false)
+    assert.deepStrictEqual(progressEvents, [
+      [1, 2, 'a.ts'],
+      [2, 2, 'b.ts']
+    ])
+
+    let cancelNow = false
+    const cancelledRes = await store.formatAll(
+      async () => {
+        cancelNow = true
+        return { status: 'ok', content: 'const x = 1;' }
+      },
+      undefined,
+      { isCancelled: () => cancelNow }
+    )
+    assert.strictEqual(cancelledRes.cancelled, true)
+    assert.strictEqual(cancelledRes.processedCount, 0)
+    assert.strictEqual(cancelledRes.content, '')
+  })
 })

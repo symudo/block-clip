@@ -288,6 +288,13 @@ class GitIgnoreFilter(private val rootDir: File, includeDefaults: Boolean = true
                 } else {
                     if (!MarkdownFormatter.isSensitiveFile(child.name)) {
                         result.add(child)
+                        if (indicator != null && (result.size == 1 || result.size % 20 == 0)) {
+                            indicator.text2 = if (ApplicationManager.getApplication() != null) {
+                                BlockClipBundle.message("progress.scanning.count", result.size)
+                            } else {
+                                "Scanning (${result.size})..."
+                            }
+                        }
                     }
                 }
             }
