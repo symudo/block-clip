@@ -58,6 +58,13 @@ export class ClipStackStore<T extends StackEntry = StackEntry> {
     return prevLength - this.items.length
   }
 
+  public removeByDirectory(dirPath: string): number {
+    const dirPrefix = `${normalizePathKey(dirPath).replace(/\/+$/, '')}/`
+    const prevLength = this.items.length
+    this.items = this.items.filter((i) => !normalizePathKey(i.fsPath).startsWith(dirPrefix))
+    return prevLength - this.items.length
+  }
+
   public clear(): void {
     this.items = []
   }

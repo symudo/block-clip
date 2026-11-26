@@ -1,16 +1,20 @@
 package com.symudo.blockclip
 
+import com.intellij.ide.DataManager
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.DumbAware
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.ui.popup.PopupStep
 import com.intellij.openapi.ui.popup.util.BaseListPopupStep
+import java.awt.Component
 
 class ManageStackAction : AnAction(), DumbAware {
 
@@ -25,89 +29,100 @@ class ManageStackAction : AnAction(), DumbAware {
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        val stackService = ClipStackService.getInstance(project)
-        val items = stackService.getItems()
+        showManagePopup(project, dataContext = e.dataContext)
+    }
 
-        if (items.isEmpty()) {
-            notify(project, BlockClipBundle.message("notification.stack.empty"), NotificationType.WARNING)
-            return
-        }
+    companion object {
+        fun showManagePopup(project: Project, anchorComponent: Component? = null, dataContext: DataContext? = null) {
+            val stackService = ClipStackService.getInstance(project)
+            val items = stackService.getItems()
 
-        data class PopupEntry(val title: String, val item: ClipItem?, val actionId: String? = null)
+            if (items.isEmpty()) {
+                notify(project, BlockClipBundle.message("notification.stack.empty"), NotificationType.WARNING)
+                return
+            }
 
-        val entries = mutableListOf<PopupEntry>()
-        entries.add(PopupEntry(BlockClipBundle.message("action.CopyStack.text"), null, "copy"))
-        entries.add(PopupEntry(BlockClipBundle.message("action.ClearStack.text"), null, "clear"))
+            data class PopupEntry(val title: String, val item: ClipItem?, val actionId: String? = null)
 
-        items.forEachIndexed { index, item ->
-            val tag = if (item.isSnippet) "(${item.lineRange})" else "(${BlockClipBundle.message("label.whole.file")})"
-            entries.add(PopupEntry("${index + 1}. ${item.relativePath} $tag - ${item.previewText}", item))
-        }
+            val entries = mutableListOf<PopupEntry>()
+            entries.add(PopupEntry(BlockClipBundle.message("action.CopyStack.text"), null, "copy"))
+            entries.add(PopupEntry(BlockClipBundle.message("action.ClearStack.text"), null, "clear"))
 
-        val step = object : BaseListPopupStep<PopupEntry>(
-            BlockClipBundle.message("title.manage.stack", items.size),
-            entries
-        ) {
-            override fun getTextFor(value: PopupEntry): String = value.title
+            items.forEachIndexed { index, item ->
+                val tag = if (item.isSnippet) "(${item.lineRange})" else "(${BlockClipBundle.message("label.whole.file")})"
+                entries.add(PopupEntry("${index + 1}. ${item.relativePath} $tag - ${item.previewText}", item))
+            }
 
-            // 必须覆写 hasSubstep，否则 IntelliJ Popup 框架不会展开二级“跳转 / 删除”子菜单
-            override fun hasSubstep(selectedValue: PopupEntry?): Boolean = selectedValue?.item != null
+            val step = object : BaseListPopupStep<PopupEntry>(
+                BlockClipBundle.message("title.manage.stack", items.size),
+                entries
+            ) {
+                override fun getTextFor(value: PopupEntry): String = value.title
 
-            override fun onChosen(selectedValue: PopupEntry?, finalChoice: Boolean): PopupStep<*>? {
-                if (selectedValue == null) return FINAL_CHOICE
+                // 必须覆写 hasSubstep，否则 IntelliJ Popup 框架不会展开二级“跳转 / 删除”子菜单
+                override fun hasSubstep(selectedValue: PopupEntry?): Boolean = selectedValue?.item != null
 
-                if (selectedValue.item == null) {
-                    return doFinalStep {
-                        when (selectedValue.actionId) {
-                            "copy" -> CopyStackAction.executeCopyStack(project)
-                            "clear" -> ClearStackAction.executeClearStack(project)
+                override fun onChosen(selectedValue: PopupEntry?, finalChoice: Boolean): PopupStep<*>? {
+                    if (selectedValue == null) return FINAL_CHOICE
+
+                    if (selectedValue.item == null) {
+                        return doFinalStep {
+                            when (selectedValue.actionId) {
+                                "copy" -> CopyStackAction.executeCopyStack(project)
+                                "clear" -> ClearStackAction.executeClearStack(project)
+                            }
                         }
                     }
-                }
 
-                val item = selectedValue.item
-                val jumpLabel = BlockClipBundle.message("action.jump.to.item")
-                val removeLabel = BlockClipBundle.message("action.remove.item")
+                    val item = selectedValue.item
+                    val jumpLabel = BlockClipBundle.message("action.jump.to.item")
+                    val removeLabel = BlockClipBundle.message("action.remove.item")
 
-                return object : BaseListPopupStep<String>(
-                    item.relativePath,
-                    listOf(jumpLabel, removeLabel)
-                ) {
-                    override fun onChosen(actionTitle: String?, finalChoice2: Boolean): PopupStep<*>? {
-                        return doFinalStep {
-                            if (actionTitle == removeLabel) {
-                                stackService.removeById(item.id)
-                                notify(
-                                    project,
-                                    BlockClipBundle.message("notification.stack.item.removed"),
-                                    NotificationType.INFORMATION
-                                )
-                            } else if (actionTitle == jumpLabel) {
-                                if (!item.file.isValid) {
+                    return object : BaseListPopupStep<String>(
+                        item.relativePath,
+                        listOf(jumpLabel, removeLabel)
+                    ) {
+                        override fun onChosen(actionTitle: String?, finalChoice2: Boolean): PopupStep<*>? {
+                            return doFinalStep {
+                                if (actionTitle == removeLabel) {
+                                    stackService.removeById(item.id)
                                     notify(
                                         project,
-                                        BlockClipBundle.message("notification.file.not.found", item.relativePath),
-                                        NotificationType.WARNING
+                                        BlockClipBundle.message("notification.stack.item.removed"),
+                                        NotificationType.INFORMATION
                                     )
-                                } else {
-                                    val startLineZeroBased = MarkdownFormatter.parseStartLineZeroBased(item.lineRange)
-                                    val descriptor = OpenFileDescriptor(project, item.file, startLineZeroBased, 0)
-                                    FileEditorManager.getInstance(project).openTextEditor(descriptor, true)
+                                } else if (actionTitle == jumpLabel) {
+                                    if (!item.file.isValid) {
+                                        notify(
+                                            project,
+                                            BlockClipBundle.message("notification.file.not.found", item.relativePath),
+                                            NotificationType.WARNING
+                                        )
+                                    } else {
+                                        val startLineZeroBased = MarkdownFormatter.parseStartLineZeroBased(item.lineRange)
+                                        val descriptor = OpenFileDescriptor(project, item.file, startLineZeroBased, 0)
+                                        FileEditorManager.getInstance(project).openTextEditor(descriptor, true)
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+
+            val popup = JBPopupFactory.getInstance().createListPopup(step)
+            when {
+                dataContext != null -> popup.showInBestPositionFor(dataContext)
+                anchorComponent != null -> popup.showInBestPositionFor(DataManager.getInstance().getDataContext(anchorComponent))
+                else -> popup.showCenteredInCurrentWindow(project)
+            }
         }
 
-        JBPopupFactory.getInstance().createListPopup(step).showInBestPositionFor(e.dataContext)
-    }
-
-    private fun notify(project: com.intellij.openapi.project.Project?, content: String, type: NotificationType) {
-        NotificationGroupManager.getInstance()
-            .getNotificationGroup("BlockClip Notification")
-            .createNotification(content, type)
-            .notify(project)
+        private fun notify(project: Project?, content: String, type: NotificationType) {
+            NotificationGroupManager.getInstance()
+                .getNotificationGroup("BlockClip Notification")
+                .createNotification(content, type)
+                .notify(project)
+        }
     }
 }

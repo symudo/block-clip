@@ -2,7 +2,7 @@
   "name": "block-clip",
   "displayName": "blockClip",
   "description": "%extension.description%",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "publisher": "yuchuan",
   "l10n": "./l10n",
   "license": "MIT",

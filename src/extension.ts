@@ -42,7 +42,8 @@ const DEFAULT_IGNORES = [
   'package-lock.json',
   'yarn.lock',
   'pnpm-lock.yaml',
-  'bun.lockb'
+  'bun.lockb',
+  '.DS_Store'
 ]
 
 function getMaxContentConfig(): { sizeMB: number; maxLength: number } {
@@ -672,8 +673,21 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       let removedCount = 0
-      for (const uri of targetUris) {
-        removedCount += stackManager.removeByUri(uri)
+      const statResults = await Promise.allSettled(
+        targetUris.map((uri) =>
+          uri.scheme === 'untitled'
+            ? Promise.resolve({ type: vscode.FileType.File } as vscode.FileStat)
+            : vscode.workspace.fs.stat(uri)
+        )
+      )
+      for (let i = 0; i < targetUris.length; i++) {
+        const uri = targetUris[i]
+        const statRes = statResults[i]
+        if (statRes.status === 'fulfilled' && (statRes.value.type & vscode.FileType.Directory) !== 0) {
+          removedCount += stackManager.removeByDirectory(uri)
+        } else {
+          removedCount += stackManager.removeByUri(uri)
+        }
       }
 
       if (removedCount > 0) {

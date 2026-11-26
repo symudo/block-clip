@@ -56,6 +56,14 @@ export class ClipStackManager {
     return count
   }
 
+  public removeByDirectory(dirUri: vscode.Uri): number {
+    const count = this.store.removeByDirectory(dirUri.fsPath)
+    if (count > 0) {
+      this.updateStatusBar()
+    }
+    return count
+  }
+
   public clear(): void {
     this.store.clear()
     this.updateStatusBar()

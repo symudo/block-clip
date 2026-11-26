@@ -2,6 +2,7 @@ package com.symudo.blockclip
 
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.actionSystem.ActionPlaces
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -12,6 +13,7 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.DumbAware
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import java.awt.datatransfer.StringSelection
 import java.io.File
@@ -115,12 +117,17 @@ class CopyFolderCodeAction : AnAction(), DumbAware {
 
     private fun getTargetFolder(e: AnActionEvent): VirtualFile? {
         val fileArray = e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY)
-        if (!fileArray.isNullOrEmpty() && fileArray.size == 1 && fileArray[0].isDirectory) {
-            return fileArray[0]
+        if (!fileArray.isNullOrEmpty()) {
+            return if (fileArray.size == 1 && fileArray[0].isDirectory) fileArray[0] else null
         }
         val singleFile = e.getData(CommonDataKeys.VIRTUAL_FILE)
-        if (singleFile != null && singleFile.isDirectory) {
-            return singleFile
+        if (singleFile != null) {
+            return if (singleFile.isDirectory) singleFile else null
+        }
+        // 非目录树右键（如 Find Action / 全局调用）无目录选中时自动回退至项目根目录（与 VS Code 对齐）
+        if (e.place != ActionPlaces.PROJECT_VIEW_POPUP) {
+            val basePath = e.project?.basePath ?: return null
+            return LocalFileSystem.getInstance().findFileByPath(basePath)?.takeIf { it.isDirectory }
         }
         return null
     }

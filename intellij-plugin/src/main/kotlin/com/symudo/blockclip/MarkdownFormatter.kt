@@ -111,6 +111,11 @@ object MarkdownFormatter {
         return if (caseInsensitive) normalized.lowercase(Locale.ROOT) else normalized
     }
 
+    fun isPathUnderDirectory(filePath: String, dirPath: String, caseInsensitive: Boolean = isWindows): Boolean {
+        val dirPrefix = normalizePathKey(dirPath, caseInsensitive).trimEnd('/') + "/"
+        return normalizePathKey(filePath, caseInsensitive).startsWith(dirPrefix)
+    }
+
     fun isBinaryFile(file: VirtualFile): Boolean {
         val extension = file.extension?.lowercase(Locale.ROOT)
         if (extension != null && binaryExtensions.contains(extension)) {

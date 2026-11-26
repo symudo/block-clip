@@ -17,6 +17,7 @@ class ClipStackActionGroup : DefaultActionGroup(), DumbAware {
         } else {
             BlockClipBundle.message("group.ClipStack.text")
         }
+        e.presentation.isEnabledAndVisible = true
         e.presentation.isPopupGroup = true
     }
 }

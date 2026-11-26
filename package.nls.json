@@ -10,6 +10,6 @@
   "command.copyStack": "Copy All in Clip Stack",
   "command.manageStack": "Manage Clip Stack...",
   "command.popFromStack": "Pop Last Item from Clip Stack",
-  "command.removeFromStack": "Remove Current File from Clip Stack",
+  "command.removeFromStack": "Remove File/Folder from Clip Stack",
   "command.clearStack": "Clear Entire Clip Stack"
 }

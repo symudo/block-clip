@@ -7,7 +7,6 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
-import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.progress.ProcessCanceledException
@@ -20,28 +19,15 @@ import java.awt.datatransfer.StringSelection
 
 class CopyCodeAction : AnAction(), DumbAware {
 
-    // update() 中读取 Editor.selectionModel 必须在 EDT 线程执行（仅纯内存操作，无 I/O）
-    override fun getActionUpdateThread(): ActionUpdateThread {
-        return ActionUpdateThread.EDT
-    }
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
-    private fun shouldCopyEditorSelection(e: AnActionEvent): Editor? {
-        if (e.place == ActionPlaces.PROJECT_VIEW_POPUP || e.place == ActionPlaces.EDITOR_TAB_POPUP) {
-            return null
-        }
-        val editor = e.getData(CommonDataKeys.EDITOR) ?: return null
-        return if (editor.selectionModel.hasSelection()) editor else null
+    private fun isPopupPlace(place: String): Boolean {
+        return place == ActionPlaces.PROJECT_VIEW_POPUP ||
+            place == ActionPlaces.EDITOR_TAB_POPUP ||
+            place == ActionPlaces.EDITOR_POPUP
     }
 
     override fun update(e: AnActionEvent) {
-        val selectionEditor = shouldCopyEditorSelection(e)
-        if (selectionEditor != null) {
-            e.presentation.isEnabledAndVisible = true
-            e.presentation.text = BlockClipBundle.message("action.CopySelection.text")
-            e.presentation.description = BlockClipBundle.message("action.CopySelection.description")
-            return
-        }
-
         val files = getTargetFiles(e)
         val hasFiles = files.any { !it.isDirectory }
         e.presentation.isEnabledAndVisible = hasFiles
@@ -52,33 +38,10 @@ class CopyCodeAction : AnAction(), DumbAware {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project
 
-        // 场景 A: 编辑器内有选中文本，直接复制选区（带相对路径、行号与体积/Token 估算）
-        val selectionEditor = shouldCopyEditorSelection(e)
-        if (selectionEditor != null) {
-            val selectionModel = selectionEditor.selectionModel
-            val selectedText = selectionModel.selectedText ?: ""
-            val document = selectionEditor.document
-            val startLineIdx = document.getLineNumber(selectionModel.selectionStart)
-            val endLineIdx = document.getLineNumber(selectionModel.selectionEnd)
-            val endCol = selectionModel.selectionEnd - document.getLineStartOffset(endLineIdx)
-            val lineRange = MarkdownFormatter.formatLineRange(startLineIdx, endLineIdx, endCol)
-
-            val file = FileDocumentManager.getInstance().getFile(document)
-            if (file != null) {
-                val maxSizeMB = BlockClipSettings.getCurrentMaxSizeMB()
-                val maxLength = BlockClipSettings.getCurrentMaxLength()
-                val formatted = MarkdownFormatter.formatSelection(file, project, selectedText, lineRange)
-                if (formatted.length.toLong() > maxLength) {
-                    notify(project, BlockClipBundle.message("notification.error.too.large", maxSizeMB), NotificationType.WARNING)
-                    return
-                }
-                CopyPasteManager.getInstance().setContents(StringSelection(formatted))
-                val stats = MarkdownFormatter.formatStats(formatted)
-                notify(
-                    project,
-                    BlockClipBundle.message("notification.copied.snippet", file.name, lineRange, stats),
-                    NotificationType.INFORMATION
-                )
+        // 通过快捷键（Alt+Shift+B）等非右键菜单触发且编辑器有选区时，智能复制选区（与 VS Code 100% 对齐）
+        if (!isPopupPlace(e.place)) {
+            val selectionEditor = CopySelectionAction.getSelectionEditor(e)
+            if (selectionEditor != null && CopySelectionAction.copyEditorSelection(project, selectionEditor)) {
                 return
             }
         }
@@ -157,6 +120,10 @@ class CopyCodeAction : AnAction(), DumbAware {
         val singleFile = e.getData(CommonDataKeys.VIRTUAL_FILE)
         if (singleFile != null) {
             return listOf(singleFile)
+        }
+
+        if (e.place == ActionPlaces.PROJECT_VIEW_POPUP || e.place == ActionPlaces.EDITOR_TAB_POPUP) {
+            return emptyList()
         }
 
         val editor = e.getData(CommonDataKeys.EDITOR)

@@ -31,16 +31,25 @@
                                  id="com.symudo.blockclip.settings"
                                  key="settings.display.name"
                                  bundle="messages.BlockClipBundle"/>
+        <statusBarWidgetFactory id="com.symudo.blockclip.ClipStackStatusBarWidget"
+                                implementation="com.symudo.blockclip.ClipStackStatusBarWidgetFactory"/>
     </extensions>
 
     <actions>
+        <action id="com.symudo.blockclip.CopySelectionAction"
+                class="com.symudo.blockclip.CopySelectionAction"
+                text="Copy Selected Code"
+                description="Copy selected code snippet with relative path and line range">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+
         <action id="com.symudo.blockclip.CopyCodeAction"
                 class="com.symudo.blockclip.CopyCodeAction"
                 text="Copy Code"
                 description="Copy file content or selection with relative path">
-            <add-to-group group-id="ProjectViewPopupMenu" anchor="after" relative-to-action="CopyPaths"/>
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="after" relative-to-action="CutCopyPasteGroup"/>
             <add-to-group group-id="EditorTabPopupMenu" anchor="after" relative-to-action="CopyPaths"/>
-            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="com.symudo.blockclip.CopySelectionAction"/>
             <keyboard-shortcut keymap="$default" first-keystroke="alt shift B"/>
         </action>
 
@@ -59,6 +68,9 @@
             <add-to-group group-id="EditorTabPopupMenu" anchor="after" relative-to-action="com.symudo.blockclip.CopyCodeAction"/>
             <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="com.symudo.blockclip.CopyCodeAction"/>
 
+            <action id="com.symudo.blockclip.AddSelectionToStackAction"
+                    class="com.symudo.blockclip.AddSelectionToStackAction"
+                    text="Add Selection to Clip Stack"/>
             <action id="com.symudo.blockclip.AddToStackAction"
                     class="com.symudo.blockclip.AddToStackAction"
                     text="Add to Clip Stack">
@@ -78,7 +90,7 @@
                     text="Pop Last Item"/>
             <action id="com.symudo.blockclip.RemoveFromStackAction"
                     class="com.symudo.blockclip.RemoveFromStackAction"
-                    text="Remove Current File from Stack"/>
+                    text="Remove Current File/Folder from Stack"/>
             <separator/>
             <action id="com.symudo.blockclip.ClearStackAction"
                     class="com.symudo.blockclip.ClearStackAction"

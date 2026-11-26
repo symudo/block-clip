@@ -2,6 +2,7 @@ package com.symudo.blockclip
 
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.actionSystem.ActionPlaces
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -15,20 +16,24 @@ class RemoveFromStackAction : AnAction(), DumbAware {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
-        val files = getTargetFiles(e).filter { !it.isDirectory }
-        e.presentation.isEnabledAndVisible = files.isNotEmpty()
+        val targets = getTargetEntries(e)
+        e.presentation.isEnabledAndVisible = targets.isNotEmpty()
         e.presentation.text = BlockClipBundle.message("action.RemoveFromStack.text")
     }
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        val files = getTargetFiles(e).filter { !it.isDirectory }
-        if (files.isEmpty()) return
+        val targets = getTargetEntries(e)
+        if (targets.isEmpty()) return
 
         val stackService = ClipStackService.getInstance(project)
         var removedCount = 0
-        for (file in files) {
-            removedCount += stackService.removeByFile(file)
+        for (target in targets) {
+            removedCount += if (target.isDirectory) {
+                stackService.removeByDirectory(target)
+            } else {
+                stackService.removeByFile(target)
+            }
         }
 
         if (removedCount > 0) {
@@ -46,12 +51,16 @@ class RemoveFromStackAction : AnAction(), DumbAware {
         }
     }
 
-    private fun getTargetFiles(e: AnActionEvent): List<VirtualFile> {
+    private fun getTargetEntries(e: AnActionEvent): List<VirtualFile> {
         val fileArray = e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY)
         if (!fileArray.isNullOrEmpty()) return fileArray.toList()
 
         val singleFile = e.getData(CommonDataKeys.VIRTUAL_FILE)
         if (singleFile != null) return listOf(singleFile)
+
+        if (e.place == ActionPlaces.PROJECT_VIEW_POPUP || e.place == ActionPlaces.EDITOR_TAB_POPUP) {
+            return emptyList()
+        }
 
         val editor = e.getData(CommonDataKeys.EDITOR)
         val document = editor?.document

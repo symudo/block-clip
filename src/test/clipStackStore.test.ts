@@ -110,6 +110,43 @@ describe('ClipStackStore', () => {
     assert.strictEqual(store.count(), 0)
   })
 
+  it('supports removeByDirectory without matching sibling directories sharing a prefix', () => {
+    const store = new ClipStackStore()
+    store.addItem({
+      id: 'in-dir-file',
+      fsPath: '/proj/src/app/a.ts',
+      relativePath: 'src/app/a.ts',
+      language: 'typescript',
+      isSnippet: false,
+      previewText: 'a',
+      addedAt: 1
+    })
+    store.addItem({
+      id: 'in-dir-snippet',
+      fsPath: '/proj/src/app/sub/b.ts',
+      relativePath: 'src/app/sub/b.ts',
+      language: 'typescript',
+      isSnippet: true,
+      lineRange: 'line 1',
+      snippetContent: 'const b = 1;',
+      previewText: 'b',
+      addedAt: 2
+    })
+    store.addItem({
+      id: 'sibling-prefix',
+      fsPath: '/proj/src/app-v2/c.ts',
+      relativePath: 'src/app-v2/c.ts',
+      language: 'typescript',
+      isSnippet: false,
+      previewText: 'c',
+      addedAt: 3
+    })
+
+    assert.strictEqual(store.removeByDirectory('/proj/src/app'), 2)
+    assert.strictEqual(store.count(), 1)
+    assert.strictEqual(store.getItems()[0].id, 'sibling-prefix')
+  })
+
   it('skips missing deleted files without emitting fake empty code blocks', async () => {
     const store = new ClipStackStore()
     store.addItem({

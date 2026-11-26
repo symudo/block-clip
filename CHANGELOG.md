@@ -3,6 +3,21 @@
 所有对本项目的显著更改都将记录在此文件中。
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/) 规范。
 
+## [0.5.2] - 2026-11-26
+
+### 🐛 根因修复 (Bug Fixes)
+- **【JetBrains】修复 IDEA / WebStorm（2024.3 ~ 2026.3）目录树右键菜单看不到「加入文件/文件夹到暂存栈」的问题**：
+  - 将 `AddToStackAction` 与 `CopyCodeAction` 的 `getActionUpdateThread()` 修正为 `ActionUpdateThread.BGT`，解决新版 IntelliJ 平台在 EDT 线程无法读取 Project View 后台数据提供器提供的 `VIRTUAL_FILE_ARRAY` / `VIRTUAL_FILE` 从而导致菜单项隐藏的缺陷。
+  - 修复 `ProjectViewPopupMenu` 菜单锚点：由已移入二级子菜单的 `CopyPaths` 改为标准顶层分组 `CutCopyPasteGroup` 之后，确保「复制文件代码 / 复制文件夹代码 / 代码暂存栈」稳定展示在复制区正下方；在目录树与标签页右键上下文中不再错误回退读取活动编辑器。
+
+### ✨ 双端功能 100% 对齐升级 (Features & Parity)
+- **【JetBrains】新增底部状态栏实时暂存栈计数指示器**：与 VS Code 状态栏完全对齐，暂存栈有内容时自动在底部状态栏实时显示条目数，点击即可在状态栏正上方展开暂存栈管理器，栈为空时不打扰界面。
+- **【JetBrains】拆出独立的编辑器选区右键动作**：新增 `CopySelectionAction` 与 `AddSelectionToStackAction`，编辑器内选中代码右键时可同时看到「复制选中代码」与「复制文件代码」（以及「加入所选代码到暂存栈」与「加入当前文件到暂存栈」），快捷键 `Alt+Shift+B` / `Alt+Shift+S` 继续保留智能选区识别，与 VS Code 100% 一致。
+- **【双端】支持目录树右键文件夹一键移出暂存栈**：在 VS Code 与 JetBrains 目录树中右键文件夹点击「从暂存栈移除文件/文件夹相关项」，可一次性移除该目录下所有已暂存的文件与代码片段（严格路径边界匹配，绝不误伤同名缀兄弟目录）。
+- **【双端】细节 100% 对齐**：JetBrains 端 `CopyFolderCodeAction` 在无目录选中（如 Find Action）调用时自动回退至当前项目根目录；VS Code 端同步补齐默认忽略 `.DS_Store` 与二进制后缀 `war`/`ear`。
+
+---
+
 ## [0.5.1] - 2026-11-24
 
 ### ✨ 新增特性 (Features)

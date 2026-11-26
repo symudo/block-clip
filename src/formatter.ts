@@ -56,6 +56,8 @@ export const binaryFileExtensions = new Set([
   'dmg',
   'class',
   'jar',
+  'war',
+  'ear',
   'woff',
   'woff2',
   'ttf',

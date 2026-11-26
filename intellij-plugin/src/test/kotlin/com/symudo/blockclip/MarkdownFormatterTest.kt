@@ -50,6 +50,15 @@ class MarkdownFormatterTest {
     }
 
     @Test
+    fun testIsPathUnderDirectory() {
+        assertTrue(MarkdownFormatter.isPathUnderDirectory("D:\\Proj\\src\\app\\Main.kt", "d:/proj/src/app", caseInsensitive = true))
+        assertTrue(MarkdownFormatter.isPathUnderDirectory("/proj/src/app/sub/A.kt", "/proj/src/app/", caseInsensitive = false))
+        // 前缀相似但非子目录不得误匹配
+        assertFalse(MarkdownFormatter.isPathUnderDirectory("/proj/src/app-v2/Main.kt", "/proj/src/app", caseInsensitive = false))
+        assertFalse(MarkdownFormatter.isPathUnderDirectory("/proj/src/app", "/proj/src/app", caseInsensitive = false))
+    }
+
+    @Test
     fun testFormatLineRangeAndOffByOneFix() {
         assertEquals("line 1", MarkdownFormatter.formatLineRange(0, 0, 12))
         assertEquals("lines 10-15", MarkdownFormatter.formatLineRange(9, 14, 8))
