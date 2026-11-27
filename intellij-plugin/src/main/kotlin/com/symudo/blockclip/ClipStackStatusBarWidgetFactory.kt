@@ -51,9 +51,9 @@ private class ClipStackStatusBarWidget(private val project: Project) :
 
     override fun getAlignment(): Float = Component.CENTER_ALIGNMENT
 
-    override fun getClickConsumer(): Consumer<MouseEvent> = Consumer { event ->
+    override fun getClickConsumer(): Consumer<MouseEvent> = Consumer {
         if (!project.isDisposed && ClipStackService.getInstance(project).count() > 0) {
-            ManageStackAction.showManagePopup(project, event.component)
+            ManageStackAction.showManagePopup(project)
         }
     }
 

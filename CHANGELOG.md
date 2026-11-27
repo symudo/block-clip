@@ -3,6 +3,14 @@
 所有对本项目的显著更改都将记录在此文件中。
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/) 规范。
 
+## [0.5.4] - 2026-11-27
+
+### ✨ 体验优化 (Enhancements)
+- **【JetBrains】暂存栈管理器改为窗口正中央弹出**：
+  - 点击右下角状态栏或通过右键菜单打开「管理暂存栈」时，弹窗统一使用 `showCenteredInCurrentWindow(project)` 居中显示在当前 IDE 窗口正中央（单页最多展示 15 条并支持滚动），彻底解决分屏或小窗口下从状态栏触发弹窗溢出窗口外部的问题。
+
+---
+
 ## [0.5.3] - 2026-11-26
 
 ### ✨ 体验升级 (Features & Enhancements)

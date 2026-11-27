@@ -1,12 +1,10 @@
 package com.symudo.blockclip
 
-import com.intellij.ide.DataManager
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.DumbAware
@@ -14,7 +12,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.ui.popup.PopupStep
 import com.intellij.openapi.ui.popup.util.BaseListPopupStep
-import java.awt.Component
 
 class ManageStackAction : AnAction(), DumbAware {
 
@@ -29,11 +26,11 @@ class ManageStackAction : AnAction(), DumbAware {
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        showManagePopup(project, dataContext = e.dataContext)
+        showManagePopup(project)
     }
 
     companion object {
-        fun showManagePopup(project: Project, anchorComponent: Component? = null, dataContext: DataContext? = null) {
+        fun showManagePopup(project: Project) {
             val stackService = ClipStackService.getInstance(project)
             val items = stackService.getItems()
 
@@ -110,12 +107,8 @@ class ManageStackAction : AnAction(), DumbAware {
                 }
             }
 
-            val popup = JBPopupFactory.getInstance().createListPopup(step)
-            when {
-                dataContext != null -> popup.showInBestPositionFor(dataContext)
-                anchorComponent != null -> popup.showInBestPositionFor(DataManager.getInstance().getDataContext(anchorComponent))
-                else -> popup.showCenteredInCurrentWindow(project)
-            }
+            val popup = JBPopupFactory.getInstance().createListPopup(step, 15)
+            popup.showCenteredInCurrentWindow(project)
         }
 
         private fun notify(project: Project?, content: String, type: NotificationType) {
