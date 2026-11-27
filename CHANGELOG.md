@@ -3,6 +3,13 @@
 所有对本项目的显著更改都将记录在此文件中。
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/) 规范。
 
+## [0.5.6] - 2026-11-27
+
+### 🏷️ 元数据更新 (Chore)
+- 将 JetBrains 插件（`plugin.xml` / `build.gradle.kts`）、VS Code 扩展（`package.json` `author`）以及配套油猴脚本（`@author`）中的作者名称统一更新为 **六月的雨**。
+
+---
+
 ## [0.5.5] - 2026-11-27
 
 ### 🐛 全仓深度代码审查修复与工程优化 (Bug Fixes & Optimizations)

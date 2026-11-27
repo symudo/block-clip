@@ -3,7 +3,7 @@
 // @namespace    https://github.com/symudo/block-clip
 // @version      3.1.1
 // @description  将 BlockClip 复制的代码还原为目录层级并打包为 ZIP（或单文件 Markdown 附件），内置原生流式 DEFLATE 压缩引擎(零CDN/彻底修复沙箱卡死)，融合【工具栏内嵌秒传】+【全程可视化进度 HUD】+【粘贴无闪烁/原生Input/自动兜底】+【聊天框自动转附件】+【侧边栏与面板上下自由拖动】，100% 兼容 Chrome/Edge/Firefox 与 Trusted Types
-// @author       symudo / Pro Enhanced
+// @author       六月的雨
 // @license      MIT
 // @match        *://gemini.google.com/*
 // @match        *://aistudio.google.com/*

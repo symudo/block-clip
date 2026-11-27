@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.symudo.blockclip</id>
     <name>BlockClip</name>
-    <vendor email="symudo@users.noreply.github.com" url="https://github.com/symudo/block-clip">symudo</vendor>
+    <vendor email="symudo@users.noreply.github.com" url="https://github.com/symudo/block-clip">六月的雨</vendor>
 
     <description><![CDATA[
     Copies file content with its relative path to the clipboard as beautifully formatted Markdown code blocks.<br>

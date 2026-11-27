@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.symudo"
-version = "0.5.5"
+version = "0.5.6"
 
 repositories {
     mavenCentral()
@@ -33,7 +33,7 @@ intellijPlatform {
         name = "BlockClip"
         version = project.version.toString()
         vendor {
-            name = "symudo"
+            name = "六月的雨"
             url = "https://github.com/symudo/block-clip"
         }
         ideaVersion {
