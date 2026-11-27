@@ -41,6 +41,48 @@ class ClipStackService(private val project: Project) {
         updateStatusBar()
     }
 
+    /**
+     * 批量入栈：单次加锁 + HashMap O(N) 去重 + 仅触发一次状态栏重绘，返回本次唯一添加/更新条目数。
+     */
+    @Synchronized
+    fun addItems(newItems: List<ClipItem>): Int {
+        if (newItems.isEmpty()) return 0
+
+        val wholeFileIndexMap = HashMap<String, Int>(items.size + newItems.size)
+        items.forEachIndexed { idx, existing ->
+            if (!existing.isSnippet) {
+                wholeFileIndexMap[MarkdownFormatter.normalizePathKey(existing.file.path)] = idx
+            }
+        }
+
+        val seenKeysInBatch = HashSet<String>(newItems.size)
+        var uniqueCount = 0
+
+        for (item in newItems) {
+            if (!item.isSnippet) {
+                val key = MarkdownFormatter.normalizePathKey(item.file.path)
+                val existingIdx = wholeFileIndexMap[key]
+                if (existingIdx != null) {
+                    items[existingIdx] = item
+                } else {
+                    wholeFileIndexMap[key] = items.size
+                    items.add(item)
+                }
+                if (seenKeysInBatch.add(key)) {
+                    uniqueCount++
+                }
+            } else {
+                items.add(item)
+                uniqueCount++
+            }
+        }
+
+        if (uniqueCount > 0) {
+            updateStatusBar()
+        }
+        return uniqueCount
+    }
+
     @Synchronized
     fun popItem(): ClipItem? {
         return if (items.isNotEmpty()) {

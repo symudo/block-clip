@@ -31,6 +31,7 @@
   "Copied {0} item(s) from clip stack [{1}]. Some were skipped due to size limits.": "已复制暂存栈中 {0} 项内容 [{1}]。因总大小超出限制，部分内容未被处理。",
   "Copied all {0} item(s) from clip stack [{1}]!": "已复制暂存栈中全部 {0} 项内容 [{1}]！",
   "Cleared clip stack.": "已清空暂存栈。",
+  "Clip Stack: {0}": "暂存栈: {0}",
   "Clip Stack contains {0} item(s). Click to manage or copy.": "代码暂存栈内有 {0} 项内容。点击可管理或一键复制。",
   "Copy All Stack Content to Clipboard": "复制暂存栈全部内容到剪贴板",
   "Clear Entire Clip Stack": "一键清空暂存栈",

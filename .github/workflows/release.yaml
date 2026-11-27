@@ -31,8 +31,8 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build VS Code Extension
-        run: pnpm run build --production
+      - name: Test & Lint VS Code Extension
+        run: pnpm test
 
       - name: Package VS Code Extension
         run: pnpm exec vsce package --no-dependencies
@@ -56,11 +56,11 @@ jobs:
             intellij-plugin/settings.gradle.kts
             intellij-plugin/gradle/wrapper/gradle-wrapper.properties
 
-      - name: Build IntelliJ Plugin
+      - name: Test & Build IntelliJ Plugin
         run: |
           cd intellij-plugin
           chmod +x ./gradlew
-          ./gradlew buildPlugin
+          ./gradlew test buildPlugin
 
       - name: Get IntelliJ Plugin Path
         id: intellij_zip_path

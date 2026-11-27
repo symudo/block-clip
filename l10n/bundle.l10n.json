@@ -31,6 +31,7 @@
   "Copied {0} item(s) from clip stack [{1}]. Some were skipped due to size limits.": "Copied {0} item(s) from clip stack [{1}]. Some were skipped due to size limits.",
   "Copied all {0} item(s) from clip stack [{1}]!": "Copied all {0} item(s) from clip stack [{1}]!",
   "Cleared clip stack.": "Cleared clip stack.",
+  "Clip Stack: {0}": "Clip Stack: {0}",
   "Clip Stack contains {0} item(s). Click to manage or copy.": "Clip Stack contains {0} item(s). Click to manage or copy.",
   "Copy All Stack Content to Clipboard": "Copy All Stack Content to Clipboard",
   "Clear Entire Clip Stack": "Clear Entire Clip Stack",

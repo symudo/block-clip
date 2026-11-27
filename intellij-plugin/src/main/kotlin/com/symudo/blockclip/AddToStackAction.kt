@@ -103,22 +103,21 @@ class AddToStackAction : AnAction(), DumbAware {
             return
         }
 
-        for (file in files) {
-            val relPath = MarkdownFormatter.getRelativePath(file, project)
-            val lang = MarkdownFormatter.getLanguage(file)
-            val item = ClipItem(
+        val wholeFileLabel = BlockClipBundle.message("label.whole.file")
+        val itemsToAdd = files.map { file ->
+            ClipItem(
                 file = file,
-                relativePath = relPath,
-                language = lang,
+                relativePath = MarkdownFormatter.getRelativePath(file, project),
+                language = MarkdownFormatter.getLanguage(file),
                 isSnippet = false,
-                previewText = BlockClipBundle.message("label.whole.file")
+                previewText = wholeFileLabel
             )
-            stackService.addItem(item)
         }
+        val addedUniqueCount = stackService.addItems(itemsToAdd)
 
         notify(
             project,
-            BlockClipBundle.message("notification.stack.added.files", files.size, stackService.count()),
+            BlockClipBundle.message("notification.stack.added.files", addedUniqueCount, stackService.count()),
             NotificationType.INFORMATION
         )
     }

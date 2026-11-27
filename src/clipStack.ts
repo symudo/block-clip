@@ -8,7 +8,7 @@ export interface ClipItem extends StackEntry {
 }
 
 export class ClipStackManager {
-  private static instance: ClipStackManager
+  private static instance: ClipStackManager | undefined
   private store = new ClipStackStore<ClipItem>()
   private statusBarItem: vscode.StatusBarItem
 
@@ -25,6 +25,10 @@ export class ClipStackManager {
     return ClipStackManager.instance
   }
 
+  public static resetInstance(): void {
+    ClipStackManager.instance = undefined
+  }
+
   public getStatusBarItem(): vscode.StatusBarItem {
     return this.statusBarItem
   }
@@ -32,6 +36,14 @@ export class ClipStackManager {
   public addItem(item: ClipItem): void {
     this.store.addItem(item)
     this.updateStatusBar()
+  }
+
+  public addItems(items: ClipItem[]): number {
+    const addedCount = this.store.addItems(items)
+    if (addedCount > 0) {
+      this.updateStatusBar()
+    }
+    return addedCount
   }
 
   public popItem(): ClipItem | undefined {
@@ -80,7 +92,7 @@ export class ClipStackManager {
   public updateStatusBar(): void {
     const count = this.store.count()
     if (count > 0) {
-      this.statusBarItem.text = `$(layers) Clip Stack: ${count}`
+      this.statusBarItem.text = `$(layers) ${vscode.l10n.t('Clip Stack: {0}', count)}`
       this.statusBarItem.tooltip = vscode.l10n.t('Clip Stack contains {0} item(s). Click to manage or copy.', count)
       this.statusBarItem.show()
     } else {

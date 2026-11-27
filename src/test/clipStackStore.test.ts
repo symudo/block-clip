@@ -52,6 +52,43 @@ describe('ClipStackStore', () => {
     assert.strictEqual(store.count(), 3)
   })
 
+  it('batch addItems deduplicates whole files in O(N) and reports accurate unique count', () => {
+    const store = new ClipStackStore()
+    const added = store.addItems([
+      {
+        id: '1',
+        fsPath: '/proj/src/a.ts',
+        relativePath: 'src/a.ts',
+        language: 'typescript',
+        isSnippet: false,
+        previewText: 'a-old',
+        addedAt: 1
+      },
+      {
+        id: '2',
+        fsPath: '/proj/src/a.ts',
+        relativePath: 'src/a.ts',
+        language: 'typescript',
+        isSnippet: false,
+        previewText: 'a-new',
+        addedAt: 2
+      },
+      {
+        id: '3',
+        fsPath: '/proj/src/b.ts',
+        relativePath: 'src/b.ts',
+        language: 'typescript',
+        isSnippet: false,
+        previewText: 'b',
+        addedAt: 3
+      }
+    ])
+
+    assert.strictEqual(added, 2)
+    assert.strictEqual(store.count(), 2)
+    assert.strictEqual(store.getItems()[0].previewText, 'a-new')
+  })
+
   it('supports LIFO pop, removeById, removeByPath, and clear', () => {
     const store = new ClipStackStore()
     store.addItem({

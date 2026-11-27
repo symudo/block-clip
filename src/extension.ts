@@ -799,25 +799,27 @@ export function activate(context: vscode.ExtensionContext) {
           return
         }
 
-        for (const uri of fileUris) {
+        const now = Date.now()
+        const wholeFilePreview = vscode.l10n.t('Whole file content')
+        const itemsToAdd = fileUris.map((uri) => {
           const relPath = getRelativePath(uri)
           const openDoc = findOpenDocument(uri)
           const lang = getLanguage(uri.fsPath, openDoc?.languageId)
-
-          stackManager.addItem({
+          return {
             id: normalizePathKey(uri.fsPath),
             uri,
             fsPath: uri.fsPath,
             relativePath: relPath,
             language: lang,
             isSnippet: false,
-            previewText: vscode.l10n.t('Whole file content'),
-            addedAt: Date.now()
-          })
-        }
+            previewText: wholeFilePreview,
+            addedAt: now
+          }
+        })
+        const addedUniqueCount = stackManager.addItems(itemsToAdd)
 
         vscode.window.showInformationMessage(
-          vscode.l10n.t('Added {0} file(s) to clip stack. Total: {1} item(s).', fileUris.length, stackManager.count())
+          vscode.l10n.t('Added {0} file(s) to clip stack. Total: {1} item(s).', addedUniqueCount, stackManager.count())
         )
       } catch (error) {
         console.error(error)
@@ -1080,4 +1082,6 @@ export function activate(context: vscode.ExtensionContext) {
   )
 }
 
-export function deactivate() {}
+export function deactivate() {
+  ClipStackManager.resetInstance()
+}

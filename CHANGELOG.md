@@ -3,6 +3,23 @@
 所有对本项目的显著更改都将记录在此文件中。
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/) 规范。
 
+## [0.5.5] - 2026-11-27
+
+### 🐛 全仓深度代码审查修复与工程优化 (Bug Fixes & Optimizations)
+- **【双端】大文件夹批量加入暂存栈升级为 $O(N)$ 去重 + 单次状态栏刷新**：
+  - 修复原先逐条循环加锁、$O(N^2)$ 去重及向 UI 线程连续投递 $N$ 次状态栏重绘的性能问题。
+  - 修复多选「文件夹 + 该文件夹内的文件」同时入栈时，提示气泡虚报重复文件数的计数错误。
+- **【VS Code】状态栏文案国际化与单例生命周期修复**：
+  - 状态栏文字接入 `l10n` 双语化（中文显示 `暂存栈: N`，英文显示 `Clip Stack: N`），与 JetBrains 端 100% 一致。
+  - 在 `deactivate()` 中重置 `ClipStackManager` 单例，避免扩展热重载时持有已销毁的 `StatusBarItem`。
+  - 将开发期文件 `commitlint.config.js` 加入 `.vscodeignore`，精简 `.vsix` 安装包内容。
+- **【JetBrains】消除 `kotlin-stdlib` 捆绑冲突警告并瘦身插件包**：
+  - 新增 `intellij-plugin/gradle.properties` 配置 `kotlin.stdlib.default.dependency=false`，消除平台 stdlib 冲突告警并大幅缩减 `.zip` 体积；清理 1 个未使用的 i18n 废弃键。
+- **【CI / Release】强化发版流水线质量门禁**：
+  - 移除 `.github/workflows/release.yaml` 中的冗余重复构建步骤，并在打正式发版包前强制执行双端全量单元测试。
+
+---
+
 ## [0.5.4] - 2026-11-27
 
 ### ✨ 体验优化 (Enhancements)

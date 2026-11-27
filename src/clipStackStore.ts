@@ -47,6 +47,45 @@ export class ClipStackStore<T extends StackEntry = StackEntry> {
     this.items.push(item)
   }
 
+  /**
+   * 批量入栈（O(N) 索引去重），返回本次实际唯一添加/更新的条目数。
+   */
+  public addItems(newItems: T[]): number {
+    if (newItems.length === 0) {
+      return 0
+    }
+    const wholeFileIndexMap = new Map<string, number>()
+    this.items.forEach((existing, idx) => {
+      if (!existing.isSnippet) {
+        wholeFileIndexMap.set(normalizePathKey(existing.fsPath), idx)
+      }
+    })
+
+    const seenKeysInBatch = new Set<string>()
+    let uniqueCount = 0
+
+    for (const item of newItems) {
+      if (!item.isSnippet) {
+        const key = normalizePathKey(item.fsPath)
+        const existingIdx = wholeFileIndexMap.get(key)
+        if (existingIdx !== undefined) {
+          this.items[existingIdx] = item
+        } else {
+          wholeFileIndexMap.set(key, this.items.length)
+          this.items.push(item)
+        }
+        if (!seenKeysInBatch.has(key)) {
+          seenKeysInBatch.add(key)
+          uniqueCount++
+        }
+      } else {
+        this.items.push(item)
+        uniqueCount++
+      }
+    }
+    return uniqueCount
+  }
+
   public popItem(): T | undefined {
     return this.items.pop()
   }
