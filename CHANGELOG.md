@@ -6,7 +6,7 @@
 ## [0.5.6] - 2026-11-27
 
 ### 🏷️ 元数据更新 (Chore)
-- 将 JetBrains 插件（`plugin.xml` / `build.gradle.kts`）、VS Code 扩展（`package.json` `author`）以及配套油猴脚本（`@author`）中的作者名称统一更新为 **六月的雨**。
+- 将 JetBrains 插件（`plugin.xml` / `build.gradle.kts`）、VS Code 扩展（`package.json` `author`）以及配套油猴脚本（`@author`）中的作者名称统一更新为 **六月的雨**；并将 VS Code 扩展发布者标识（`publisher`）更新为 **`rainyJune`**。
 
 ---
 
